@@ -3362,7 +3362,7 @@ Spring提供了一个`JmsTransactionManager`管理单个JMS事务的 `Connection
 
 跨托管和非托管的事务环境下重用代码可以使用JMS API来创建一个混乱的时候`Session`从一个`Connection`。这是因为JMS API只有一种工厂方法可以创建`Session`，并且它需要事务和确认模式的值。在托管环境中，设置这些值是环境的事务基础结构的责任，因此，供应商对JMS Connection的包装将忽略这些值。当您使用`JmsTemplate` 在非托管环境中，您可以通过使用属性来指定这些值`sessionTransacted`和`sessionAcknowledgeMode`。当使用 `PlatformTransactionManager`with时`JmsTemplate`，模板总是被赋予事务性JMS `Session`。
 
-### 4.2。发送信息
+### 4.2. 发送信息
 
 将`JmsTemplate`包含许多方便的方法来发送消息。发送方法通过使用`javax.jms.Destination`对象指定目的地，其他方法通过`String`在JNDI查找中使用指定目的地。`send`不使用目标参数的方法使用默认目标。
 
@@ -3739,7 +3739,9 @@ public class MyService {
 
 `@JmsListener`是Java 8上的可重复注释，因此您可以通过`@JmsListener` 向其添加其他声明来将多个JMS目标与同一方法相关联。
 
-#### 4.5.1. 要启用对`@JmsListener`注释的支持，可以将其添加`@EnableJms`到一个`@Configuration`类中，如以下示例所示：
+#### 4.5.1. Annotation-driven Listener Endpoints
+
+要启用对`@JmsListener`注释的支持，可以将其添加`@EnableJms`到一个`@Configuration`类中，如以下示例所示：
 
 ```java
 @Configuration
@@ -3758,3 +3760,2915 @@ public class AppConfig {
 }
 ```
 
+默认情况下，基础结构会寻找一个名为Bean`jmsListenerContainerFactory` 的工厂供其用来创建消息侦听器容器的源。在这种情况下（并忽略JMS基础结构设置），您可以`processOrder` 使用三个线程的核心轮询大小和十个线程的最大池大小来调用该方法。
+
+您可以自定义用于每个注释的侦听器容器工厂，也可以通过实现`JmsListenerConfigurer`接口来配置显式默认值。仅当至少一个端点在没有特定容器工厂的情况下注册时，才需要使用默认值。有关[`JmsListenerConfigurer`](https://docs.spring.io/spring-framework/docs/5.3.1/javadoc-api/org/springframework/jms/annotation/JmsListenerConfigurer.html) 详细信息和示例，请参见实现的类的javadoc 。
+
+如果您更喜欢[XML配置](https://docs.spring.io/spring-framework/docs/current/reference/html/integration.html#jms-namespace)，那么可以使用`<jms:annotation-driven>` 元素，如以下示例所示：
+
+```xml
+<jms:annotation-driven/>
+
+<bean id="jmsListenerContainerFactory"
+        class="org.springframework.jms.config.DefaultJmsListenerContainerFactory">
+    <property name="connectionFactory" ref="connectionFactory"/>
+    <property name="destinationResolver" ref="destinationResolver"/>
+    <property name="sessionTransacted" value="true"/>
+    <property name="concurrency" value="3-10"/>
+</bean>
+```
+
+#### 4.5.2. 程序化端点注册
+
+`JmsListenerEndpoint`提供JMS端点的模型，并负责为该模型配置容器。除了`JmsListener`注释所检测的端点之外，基础结构还允许您以编程方式配置端点。以下示例显示了如何执行此操作：
+
+```java
+@Configuration
+@EnableJms
+public class AppConfig implements JmsListenerConfigurer {
+
+    @Override
+    public void configureJmsListeners(JmsListenerEndpointRegistrar registrar) {
+        SimpleJmsListenerEndpoint endpoint = new SimpleJmsListenerEndpoint();
+        endpoint.setId("myJmsEndpoint");
+        endpoint.setDestination("anotherQueue");
+        endpoint.setMessageListener(message -> {
+            // processing
+        });
+        registrar.registerEndpoint(endpoint);
+    }
+}
+```
+
+在前面的示例中，我们使用`SimpleJmsListenerEndpoint`了提供实际 `MessageListener`调用的。但是，您也可以构建自己的端点变体来描述自定义调用机制。
+
+请注意，您可以`@JmsListener`完全跳过使用，而可以通过编程方式仅注册端点`JmsListenerConfigurer`。
+
+ 4.5.3. 带注释的端点方法签名
+
+```java
+@Component
+public class MyService {
+
+    @JmsListener(destination = "myDestination")
+    public void processOrder(Order order, @Header("order_type") String orderType) {
+        ...
+    }
+}
+```
+
+您可以在JMS侦听器端点中注入的主要元素如下：
+
+- 原始`javax.jms.Message`或其任何子类（前提是它与传入的消息类型匹配）。
+- 该`javax.jms.Session`可选访问本地JMS API（例如，用于发送一个自定义的回复）。
+- 的`org.springframework.messaging.Message`，它表示传入的JMS消息。请注意，此消息同时包含自定义标头和标准标头（由定义`JmsHeaders`）。
+- `@Header`-带注释的方法参数，以提取特定的标头值，包括标准的JMS标头。
+- 一个带`@Headers`注释的参数，也必须可分配给该参数，以`java.util.Map`访问所有标头。
+- 不是支持的类型（`Message`或 `Session`）之一的非注释元素被视为有效负载。您可以通过使用注释参数来使其明确`@Payload`。您还可以通过添加额外的来启用验证 `@Valid`。
+
+注入Spring的`Message`抽象功能特别有用，它可以受益于存储在特定于传输的消息中的所有信息，而无需依赖于特定于传输的API。以下示例显示了如何执行此操作：
+
+```java
+@JmsListener(destination = "myDestination")
+public void processOrder(Message<Order> order) { ... }
+```
+
+方法参数的处理由提供`DefaultMessageHandlerMethodFactory`，您可以进一步自定义以支持其他方法参数。您也可以在那里自定义转换和验证支持。
+
+例如，如果要`Order`在处理之前确保我们的有效，则可以使用注释有效负载`@Valid`并配置必要的验证器，如以下示例所示：
+
+```java
+@Configuration
+@EnableJms
+public class AppConfig implements JmsListenerConfigurer {
+
+    @Override
+    public void configureJmsListeners(JmsListenerEndpointRegistrar registrar) {
+        registrar.setMessageHandlerMethodFactory(myJmsHandlerMethodFactory());
+    }
+
+    @Bean
+    public DefaultMessageHandlerMethodFactory myHandlerMethodFactory() {
+        DefaultMessageHandlerMethodFactory factory = new DefaultMessageHandlerMethodFactory();
+        factory.setValidator(myValidator());
+        return factory;
+    }
+}
+```
+
+#### 4.5.4. 反应管理
+
+现有的支持[`MessageListenerAdapter`](https://docs.spring.io/spring-framework/docs/current/reference/html/integration.html#jms-receiving-async-message-listener-adapter) 已经使您的方法具有非`void`返回类型。在这种情况下，调用的结果将封装在中`javax.jms.Message`，发送`JMSReplyTo`到原始消息的标头中指定的目标位置或侦听器上配置的默认目标位置。现在，您可以使用`@SendTo`消息传递抽象的注释来设置默认目标。
+
+假设我们的`processOrder`方法现在应该返回`OrderStatus`，我们可以将其编写为自动发送响应，如以下示例所示：
+
+```java
+@JmsListener(destination = "myDestination")
+@SendTo("status")
+public OrderStatus processOrder(Order order) {
+    // order processing
+    return status;
+}
+```
+
+如果需要以与传输无关的方式设置其他标头，则可以`Message`使用类似于以下方法的方法返回a ：
+
+```java
+@JmsListener(destination = "myDestination")
+@SendTo("status")
+public Message<OrderStatus> processOrder(Order order) {
+    // order processing
+    return MessageBuilder
+            .withPayload(status)
+            .setHeader("code", 1234)
+            .build();
+}
+```
+如果需要在运行时计算响应目标，则可以将响应封装在一个JmsResponse实例中，该实例还提供要在运行时使用的目标。我们可以如下重写前一个示例：
+```java
+@JmsListener(destination = "myDestination")
+public JmsResponse<Message<OrderStatus>> processOrder(Order order) {
+    // order processing
+    Message<OrderStatus> response = MessageBuilder
+            .withPayload(status)
+            .setHeader("code", 1234)
+            .build();
+    return JmsResponse.forQueue(response, "status");
+}
+```
+最后，如果需要为响应指定一些QoS值，例如优先级或生存时间，则可以进行相应的配置JmsListenerContainerFactory，如以下示例所示：
+```java
+@Configuration
+@EnableJms
+public class AppConfig {
+
+    @Bean
+    public DefaultJmsListenerContainerFactory jmsListenerContainerFactory() {
+        DefaultJmsListenerContainerFactory factory = new DefaultJmsListenerContainerFactory();
+        factory.setConnectionFactory(connectionFactory());
+        QosSettings replyQosSettings = new QosSettings();
+        replyQosSettings.setPriority(2);
+        replyQosSettings.setTimeToLive(10000);
+        factory.setReplyQosSettings(replyQosSettings);
+        return factory;
+    }
+}
+```
+
+### 4.6. JMS命名空间支持
+
+Spring提供了一个XML名称空间来简化JMS配置。要使用JMS名称空间元素，您需要引用JMS模式，如以下示例所示：
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xmlns:jms="http://www.springframework.org/schema/jms" 
+        xsi:schemaLocation="
+            http://www.springframework.org/schema/beans https://www.springframework.org/schema/beans/spring-beans.xsd
+            http://www.springframework.org/schema/jms https://www.springframework.org/schema/jms/spring-jms.xsd">
+
+    <!-- bean definitions here -->
+
+</beans>
+```
+这个命名空间由三个顶级元素：<annotation-driven/>，<listener-container/> 和<jca-listener-container/>。<annotation-driven/>启用注释驱动的侦听器终结点的使用。<listener-container/>并<jca-listener-container/> 定义共享的侦听器容器配置，并且可以包含<listener/>子元素。以下示例显示了两个侦听器的基本配置：
+```xml
+<jms:listener-container>
+
+    <jms:listener destination="queue.orders" ref="orderService" method="placeOrder"/>
+
+    <jms:listener destination="queue.confirmations" ref="confirmationLogger" method="log"/>
+
+</jms:listener-container>
+```
+前面的示例等效于创建两个不同的侦听器容器bean定义和两个不同的MessageListenerAdapterbean定义，如Using中MessageListenerAdapter所示。除了前面示例中显示的属性之外，该listener元素还可以包含几个可选属性。下表描述了所有可用属性：
+
+表3. JMS <listener>元素的属性
+属性	描述
+id
+
+托管侦听器容器的Bean名称。如果未指定，将自动生成Bean名称。
+
+destination （需要）
+
+此侦听器的目标名称，通过DestinationResolver 策略解析。
+
+ref （需要）
+
+处理程序对象的bean名称。
+
+method
+
+要调用的处理程序方法的名称。如果ref属性指向MessageListener 或Spring SessionAwareMessageListener，则可以忽略此属性。
+
+response-destination
+
+向其发送响应消息的默认响应目标的名称。在请求消息不包含JMSReplyTo字段的情况下适用。此目标的类型由listener-container的 response-destination-type属性确定。请注意，这仅适用于具有返回值的侦听器方法，为此，每个结果对象都将转换为响应消息。
+
+subscription
+
+持久订阅的名称（如果有）。
+
+selector
+
+此侦听器的可选消息选择器。
+
+concurrency
+
+要启动此侦听器的并发会话或使用者的数量。此值可以是表示最大数的简单数字（例如5），也可以是表示下限和上限的范围（例如3-5）。请注意，指定的最小值仅是一个提示，在运行时可能会被忽略。默认值为容器提供的值。
+
+该<listener-container/>元素还接受几个可选属性。这允许自定义各种策略（例如taskExecutor和 destinationResolver）以及基本的JMS设置和资源引用。通过使用这些属性，您可以定义高度自定义的侦听器容器，同时仍然受益于命名空间的便利性。
+
+您可以JmsListenerContainerFactory通过指定id通过factory-id属性公开的Bean来自动将这些设置显示为，如以下示例所示：
+```xml
+<jms:listener-container connection-factory="myConnectionFactory"
+        task-executor="myTaskExecutor"
+        destination-resolver="myDestinationResolver"
+        transaction-manager="myTransactionManager"
+        concurrency="10">
+
+    <jms:listener destination="queue.orders" ref="orderService" method="placeOrder"/>
+
+    <jms:listener destination="queue.confirmations" ref="confirmationLogger" method="log"/>
+
+</jms:listener-container>
+```
+下表描述了所有可用属性。有关AbstractMessageListenerContainer 各个属性的更多详细信息，请参见和其具体子类的类级javadoc 。Javadoc还讨论了事务选择和消息重新交付方案。
+
+表4. JMS <listener-container>元素的属性
+属性	描述
+container-type
+
+此侦听器容器的类型。可用选项为default，simple， default102或者simple102（默认选项default）。
+
+container-class
+
+自定义侦听器容器实现类，作为完全限定的类名称。根据属性，默认值为Spring的标准DefaultMessageListenerContainer或 。SimpleMessageListenerContainercontainer-type
+
+factory-id
+
+将此元素定义的设置公开为JmsListenerContainerFactory 带有指定的，id以便它们可以与其他端点重用。
+
+connection-factory
+
+对JMS ConnectionFactoryBean的引用（默认Bean名称为 connectionFactory）。
+
+task-executor
+
+TaskExecutor对JMS侦听器调用程序的Spring的引用。
+
+destination-resolver
+
+DestinationResolver对解决JMSDestination实例的策略的引用。
+
+message-converter
+
+MessageConverter对将JMS消息转换为侦听器方法参数的策略的参考。默认值为SimpleMessageConverter。
+
+error-handler
+
+引用一种ErrorHandler策略，用于处理在执行期间可能发生的任何未捕获的异常MessageListener。
+
+destination-type
+
+这个监听器的JMS目的地类型：queue，topic，durableTopic，sharedTopic，或sharedDurableTopic。这潜在地使pubSubDomain，subscriptionDurable 与subscriptionShared所述容器的性质。默认值为queue（禁用这三个属性）。
+
+response-destination-type
+
+响应的JMS目标类型：queue或topic。默认值为该destination-type属性的值 。
+
+client-id
+
+此侦听器容器的JMS客户端ID。使用持久订阅时必须指定它。
+
+cache
+
+对JMS资源的高速缓存级别：none，connection，session，consumer，或 auto。默认情况下（auto），consumer除非指定了外部事务管理器，否则缓存级别是有效的-在这种情况下，有效的默认值将是none（假设Java EE风格的事务管理，其中给定的ConnectionFactory是可识别XA的池）。
+
+acknowledge
+
+本机JMS确认模式：auto，client，dups-ok，或transacted。值transacted激活本地交易Session。或者，您可以指定transaction-manager属性，如表中稍后所述。默认值为auto。
+
+transaction-manager
+
+对外部PlatformTransactionManager（通常是基于XA的事务协调器，例如Spring的JtaTransactionManager）的引用。如果未指定，则使用本机确认（请参阅acknowledge属性）。
+
+concurrency
+
+每个侦听器启动的并发会话或使用者的数量。它可以是表示最大数的简单数字（例如5），也可以是表示下限和上限的范围（例如3-5）。请注意，指定的最小值只是一个提示，在运行时可能会被忽略。默认值为1。如果1主题侦听器或队列顺序很重要，则应将并发限制在一定范围内。考虑将其提高到一般队列。
+
+prefetch
+
+加载到单个会话中的最大消息数。请注意，增加此数字可能会导致并发消费者饥饿。
+
+receive-timeout
+
+用于接听电话的超时时间（以毫秒为单位）。默认值为1000（一秒钟）。-1表示没有超时。
+
+back-off
+
+指定BackOff用于计算恢复尝试间隔的实例。如果BackOffExecution实现返回BackOffExecution#STOP，则侦听器容器不会进一步尝试恢复。recovery-interval 设置此属性后，将忽略该值。缺省值为a FixedBackOff，间隔为5000毫秒（即5秒）。
+
+recovery-interval
+
+指定两次恢复尝试之间的时间间隔（以毫秒为单位）。它提供了一种方便的方法来创建FixedBackOff具有指定间隔的。有关更多恢复选项，请考虑指定一个BackOff实例。缺省值为5000毫秒（即5秒）。
+
+phase
+
+该容器应在其中启动和停止的生命周期阶段。值越低，此容器启动越早，而其停止越晚。默认值为 Integer.MAX_VALUE，表示容器尽可能晚地启动，并尽快停止。
+
+使用jms模式支持配置基于JCA的侦听器容器非常相似，如以下示例所示：
+```xml
+<jms:jca-listener-container resource-adapter="myResourceAdapter"
+        destination-resolver="myDestinationResolver"
+        transaction-manager="myTransactionManager"
+        concurrency="10">
+
+    <jms:listener destination="queue.orders" ref="myMessageListener"/>
+
+</jms:jca-listener-container>
+```
+下表描述了JCA变体的可用配置选项：
+
+表5. JMS <jca-listener-container />元素的属性
+属性	描述
+factory-id
+
+将此元素定义的设置公开为JmsListenerContainerFactory 带有指定的，id以便它们可以与其他端点重用。
+
+resource-adapter
+
+对JCA ResourceAdapterbean的引用（默认bean名称为 resourceAdapter）。
+
+activation-spec-factory
+
+对的引用JmsActivationSpecFactory。默认设置是自动检测JMS提供程序及其ActivationSpec类（请参阅参考资料DefaultJmsActivationSpecFactory）。
+
+destination-resolver
+
+DestinationResolver解决JMS的策略的参考Destinations。
+
+message-converter
+
+MessageConverter对将JMS消息转换为侦听器方法参数的策略的参考。默认值为SimpleMessageConverter。
+
+destination-type
+
+这个监听器的JMS目的地类型：queue，topic，durableTopic，sharedTopic。或sharedDurableTopic。这潜在地使pubSubDomain，subscriptionDurable和subscriptionShared容器的性质。默认值为queue（禁用这三个属性）。
+
+response-destination-type
+
+响应的JMS目标类型：queue或topic。默认值为该destination-type属性的值 。
+
+client-id
+
+此侦听器容器的JMS客户端ID。使用持久订阅时需要指定它。
+
+acknowledge
+
+本机JMS确认模式：auto，client，dups-ok，或transacted。值transacted激活本地交易Session。或者，您可以指定transaction-manager稍后描述的属性。默认值为auto。
+
+transaction-manager
+
+对SpringJtaTransactionManager或a的 引用，javax.transaction.TransactionManager用于为每个传入消息启动XA事务。如果未指定，则使用本机确认（请参阅 acknowledge属性）。
+
+concurrency
+
+每个侦听器启动的并发会话或使用者的数量。它可以是表示最大值的简单数字（例如5），也可以是表示上下限的范围（例如3-5）。请注意，指定的最小值只是一个提示，通常在运行时使用JCA侦听器容器时将被忽略。预设值为1。
+
+prefetch
+
+加载到单个会话中的最大消息数。请注意，增加此数字可能会导致并发消费者饥饿。
+## 5. JMX
+Spring中的JMX（Java管理扩展）支持提供了一些功能，使您可以轻松，透明地将Spring应用程序集成到JMX基础结构中。
+具体来说，Spring的JMX支持提供了四个核心功能：
+
+将任何Spring bean自动注册为JMX MBean。
+
+用于控制bean的管理界面的灵活机制。
+
+通过远程JSR-160连接器以声明方式公开MBean。
+
+本地和远程MBean资源的简单代理。
+
+这些功能旨在在不将应用程序组件耦合到Spring或JMX接口和类的情况下起作用。实际上，在大多数情况下，您的应用程序类无需了解Spring或JMX即可利用Spring JMX功能。
+### 5.1. 将您的Bean导出到JMX
+Spring的JMX框架的核心类是MBeanExporter。此类负责获取您的Spring bean并向JMX注册它们MBeanServer。例如，考虑以下类：
+```java
+package org.springframework.jmx;
+
+public class JmxTestBean implements IJmxTestBean {
+
+    private String name;
+    private int age;
+    private boolean isSuperman;
+
+    public int getAge() {
+        return age;
+    }
+
+    public void setAge(int age) {
+        this.age = age;
+    }
+
+    public void setName(String name) {
+        this.name = name;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public int add(int x, int y) {
+        return x + y;
+    }
+
+    public void dontExposeMe() {
+        throw new RuntimeException();
+    }
+}
+```
+要将此Bean的属性和方法公开为MBean的属性和操作，可以MBeanExporter在配置文件中配置该类的实例并传入Bean，如以下示例所示：
+```xml
+<beans>
+    <!-- this bean must not be lazily initialized if the exporting is to happen -->
+    <bean id="exporter" class="org.springframework.jmx.export.MBeanExporter" lazy-init="false">
+        <property name="beans">
+            <map>
+                <entry key="bean:name=testBean1" value-ref="testBean"/>
+            </map>
+        </property>
+    </bean>
+    <bean id="testBean" class="org.springframework.jmx.JmxTestBean">
+        <property name="name" value="TEST"/>
+        <property name="age" value="100"/>
+    </bean>
+</beans>
+```
+前面的配置片段中相关的bean定义是exporter bean。该beans属性MBeanExporter确切地告诉您必须将哪些bean导出到JMX MBeanServer。在默认配置中，中的每个条目的键beans Map都用作ObjectName相应条目值所引用的Bean。您可以更改此行为，如控制ObjectNameBean的实例中所述。
+
+使用此配置，该testBeanBean在下方显示为MBean ObjectName bean:name=testBean1。默认情况下，publicbean的所有属性都公开为属性，所有public方法（从Object类继承的方法除外 ）都公开为操作。
+
+MBeanExporter是一个Lifecyclebean（请参阅启动和关闭回调）。默认情况下，MBean在应用程序生命周期中尽可能晚地导出。您可以phase通过设置autoStartup标志来配置导出发生的位置或禁用自动注册。
+#### 5.1.1. 创建一个MBeanServer
+上一节中显示的配置假定该应用程序正在一个（并且只有一个）MBeanServer 已经运行的环境中运行。在这种情况下，Spring尝试找到正在运行的MBeanServer服务器，并将您的bean注册到该服务器（如果有）。当您的应用程序在具有自己的容器（例如Tomcat或IBM WebSphere）中运行时，此行为很有用MBeanServer。
+
+但是，这种方法在独立环境中或在未提供的容器中运行时没有用MBeanServer。为了解决这个问题，您可以MBeanServer通过将org.springframework.jmx.support.MBeanServerFactoryBean类的实例添加到配置中来声明性地创建 实例 。您还可以MBeanServer通过将MBeanExporter实例server属性的MBeanServer值设置为所返回的值 来确保使用特定对象 MBeanServerFactoryBean，如以下示例所示：
+```xml
+<beans>
+
+    <bean id="mbeanServer" class="org.springframework.jmx.support.MBeanServerFactoryBean"/>
+
+    <!--
+    this bean needs to be eagerly pre-instantiated in order for the exporting to occur;
+    this means that it must not be marked as lazily initialized
+    -->
+    <bean id="exporter" class="org.springframework.jmx.export.MBeanExporter">
+        <property name="beans">
+            <map>
+                <entry key="bean:name=testBean1" value-ref="testBean"/>
+            </map>
+        </property>
+        <property name="server" ref="mbeanServer"/>
+    </bean>
+
+    <bean id="testBean" class="org.springframework.jmx.JmxTestBean">
+        <property name="name" value="TEST"/>
+        <property name="age" value="100"/>
+    </bean>
+
+</beans>
+```
+在前面的示例中，的实例由MBeanServer创建，MBeanServerFactoryBean并MBeanExporter通过server属性提供给。提供您自己的 MBeanServer实例时，MBeanExporter不会尝试查找正在运行 MBeanServer的MBeanServer实例并使用提供的实例。为了使其正常工作，您必须在类路径上具有JMX实现。
+#### 5.1.2. 重用现有的MBeanServer
+如果未指定服务器，则MBeanExporter尝试自动检测正在运行 MBeanServer。在大多数仅使用一个MBeanServer实例的环境中，这是可行的。但是，当存在多个实例时，导出器可能选择了错误的服务器。在这种情况下，应使用MBeanServer agentId指示要使用的实例，如以下示例所示：
+```xml
+<beans>
+    <bean id="mbeanServer" class="org.springframework.jmx.support.MBeanServerFactoryBean">
+        <!-- indicate to first look for a server -->
+        <property name="locateExistingServerIfPossible" value="true"/>
+        <!-- search for the MBeanServer instance with the given agentId -->
+        <property name="agentId" value="MBeanServer_instance_agentId>"/>
+    </bean>
+    <bean id="exporter" class="org.springframework.jmx.export.MBeanExporter">
+        <property name="server" ref="mbeanServer"/>
+        ...
+    </bean>
+</beans>
+```
+对于平台或现有的MBeanServer具有agentId通过查找方法检索到的动态（或未知）动态的 情况，应使用 factory-method，如以下示例所示：
+```xml
+<beans>
+    <bean id="exporter" class="org.springframework.jmx.export.MBeanExporter">
+        <property name="server">
+            <!-- Custom MBeanServerLocator -->
+            <bean class="platform.package.MBeanServerLocator" factory-method="locateMBeanServer"/>
+        </property>
+    </bean>
+
+    <!-- other beans here -->
+
+</beans>
+```
+#### 5.1.3. 延迟初始化的MBean
+如果使用MBeanExporter还配置了延迟初始化的来配置Bean ，MBeanExporter则不会破坏该协定，并避免实例化该Bean。相反，它向注册了一个代理，MBeanServer并推迟从容器中获取Bean，直到对该代理进行第一次调用为止。
+#### 5.1.4. 自动注册MBean
+通过导出的MBeanExporter，已经是有效MBean的所有Bean都将按原样注册，MBeanServer而无需Spring的进一步干预。MBeanExporter通过将autodetect 属性设置为true，可以使MBean被自动检测，如以下示例所示：
+```xml
+<bean id="exporter" class="org.springframework.jmx.export.MBeanExporter">
+    <property name="autodetect" value="true"/>
+</bean>
+
+<bean name="spring:mbean=true" class="org.springframework.jmx.export.TestDynamicMBean"/>
+```
+在前面的示例中，被调用的beanspring:mbean=true已经是有效的JMX MBean，并由Spring自动注册。默认情况下，自动检测到JMX注册的bean的bean名称用作ObjectName。您可以覆盖此行为，如控制ObjectNameBean的实例中所述。
+#### 5.1.5 控制注册行为
+考虑这样一个春天的情景MBeanExporter尝试注册一个MBean 与MBeanServer使用ObjectName bean:name=testBean1。如果MBean 实例已经在该实例下注册ObjectName，则默认行为是失败（并抛出InstanceAlreadyExistsException）。
+
+您可以精确控制将MBean进行注册时发生的情况MBeanServer。Spring的JMX支持允许三种不同的注册行为来控制注册行为，当注册过程发现anMBean已在相同的之下注册时ObjectName。下表总结了这些注册行为：
+
+表6.注册行为
+注册行为	说明
+FAIL_ON_EXISTING
+
+这是默认的注册行为。如果一个MBean实例已经在相同的注册ObjectName，将MBean正在注册不注册，而InstanceAlreadyExistsException被抛出。现有 MBean不受影响。
+
+IGNORE_EXISTING
+
+如果MBean已经在同一实例下注册了实例ObjectName，那么 MBean正在注册的实例不会被注册。现有MBean不受影响，并且不会Exception抛出任何异常。这在多个应用程序要共享一个共享MBean中的一个共享的设置中很有用MBeanServer。
+
+REPLACE_EXISTING
+
+如果某个MBean实例已经在同一实例下注册ObjectName，那么MBean先前已注册的现有实例将被取消注册，并且新 实例将MBean在其位置注册（新MBean实例将有效替换先前的实例）。
+
+上表中的值被定义为RegistrationPolicy该类上的枚举。如果要更改默认注册行为，则需要将定义registrationPolicy上的属性值设置 MBeanExporter为这些值之一。
+
+下面的示例显示如何从默认注册行为更改为REPLACE_EXISTING行为：
+```xml
+<beans>
+
+    <bean id="exporter" class="org.springframework.jmx.export.MBeanExporter">
+        <property name="beans">
+            <map>
+                <entry key="bean:name=testBean1" value-ref="testBean"/>
+            </map>
+        </property>
+        <property name="registrationPolicy" value="REPLACE_EXISTING"/>
+    </bean>
+
+    <bean id="testBean" class="org.springframework.jmx.JmxTestBean">
+        <property name="name" value="TEST"/>
+        <property name="age" value="100"/>
+    </bean>
+
+</beans>
+```
+### 5.2. 控制Bean的管理接口
+在上一节的示例中，您几乎没有控制bean的管理接口。public 每个导出的bean的所有属性和方法分别作为JMX属性和操作公开。为了对出口的Bean的哪些属性和方法实际上作为JMX属性和操作公开而进行更细粒度的控制，Spring JMX提供了一种全面且可扩展的机制来控制Bean的管理接口。
+#### 5.2.1. 使用MBeanInfoAssembler介面
+在后台，MBeanExporter代表org.springframework.jmx.export.assembler.MBeanInfoAssembler接口的实现，该 接口负责定义每个公开的bean的管理接口。默认实现 org.springframework.jmx.export.assembler.SimpleReflectiveMBeanInfoAssembler定义了一个管理接口，该接口公开了所有公共属性和方法（如前面各节中的示例所示）。Spring提供了MBeanInfoAssembler接口的两个附加实现，使您可以使用源级元数据或任何任意接口来控制生成的管理接口
+#### 5.2.2. 使用源级元数据：Java注释
+通过使用MetadataMBeanInfoAssembler，您可以使用源级元数据为bean定义管理界面。org.springframework.jmx.export.metadata.JmxAttributeSource接口封装了元数据的读取。Spring JMX提供了使用Java注释的默认实现，即 org.springframework.jmx.export.annotation.AnnotationJmxAttributeSource。您必须MetadataMBeanInfoAssembler使用JmxAttributeSource接口的实现实例配置，才能使其正常运行（没有默认值）。
+
+要标记要导出到JMX的bean，应使用注释对bean类进行 ManagedResource注释。您必须使用ManagedOperation注释将要公开的每个方法标记为一个操作，并使用注释将要公开的每个属性标记为ManagedAttribute。标记属性时，可以省略getter或setter的注释，以分别创建只写或只读属性。
+
+带ManagedResource注释的Bean必须是公共的，公开操作或属性的方法也必须是公共的。
+以下示例显示了JmxTestBean我们在创建MBeanServer中使用的类的带注释版本：
+```java
+package org.springframework.jmx;
+
+import org.springframework.jmx.export.annotation.ManagedResource;
+import org.springframework.jmx.export.annotation.ManagedOperation;
+import org.springframework.jmx.export.annotation.ManagedAttribute;
+
+@ManagedResource(
+        objectName="bean:name=testBean4",
+        description="My Managed Bean",
+        log=true,
+        logFile="jmx.log",
+        currencyTimeLimit=15,
+        persistPolicy="OnUpdate",
+        persistPeriod=200,
+        persistLocation="foo",
+        persistName="bar")
+public class AnnotationTestBean implements IJmxTestBean {
+
+    private String name;
+    private int age;
+
+    @ManagedAttribute(description="The Age Attribute", currencyTimeLimit=15)
+    public int getAge() {
+        return age;
+    }
+
+    public void setAge(int age) {
+        this.age = age;
+    }
+
+    @ManagedAttribute(description="The Name Attribute",
+            currencyTimeLimit=20,
+            defaultValue="bar",
+            persistPolicy="OnUpdate")
+    public void setName(String name) {
+        this.name = name;
+    }
+
+    @ManagedAttribute(defaultValue="foo", persistPeriod=300)
+    public String getName() {
+        return name;
+    }
+
+    @ManagedOperation(description="Add two numbers")
+    @ManagedOperationParameters({
+        @ManagedOperationParameter(name = "x", description = "The first number"),
+        @ManagedOperationParameter(name = "y", description = "The second number")})
+    public int add(int x, int y) {
+        return x + y;
+    }
+
+    public void dontExposeMe() {
+        throw new RuntimeException();
+    }
+
+}
+```
+在前面的示例中，您可以看到JmxTestBean该类标记有 ManagedResource注释，并且该ManagedResource注释配置了一组属性。这些属性可用于配置MBean生成的MBean的各个方面，MBeanExporter稍后将在Source-level Metadata Types中进行详细说明。
+
+无论是age和name属性注释与ManagedAttribute 注释，但是，在的情况下age财产，只标记了getter。这导致这两个属性都作为属性包含在管理界面中，但是该age属性是只读的。
+
+最后，该add(int, int)方法带有ManagedOperation属性标记，而dontExposeMe()方法则没有。使用时，这将导致管理界面仅包含一个操作（add(int, int)）MetadataMBeanInfoAssembler。
+
+以下配置显示了如何配置MBeanExporter来使用 MetadataMBeanInfoAssembler：
+```xml
+<beans>
+    <bean id="exporter" class="org.springframework.jmx.export.MBeanExporter">
+        <property name="assembler" ref="assembler"/>
+        <property name="namingStrategy" ref="namingStrategy"/>
+        <property name="autodetect" value="true"/>
+    </bean>
+
+    <bean id="jmxAttributeSource"
+            class="org.springframework.jmx.export.annotation.AnnotationJmxAttributeSource"/>
+
+    <!-- will create management interface using annotation metadata -->
+    <bean id="assembler"
+            class="org.springframework.jmx.export.assembler.MetadataMBeanInfoAssembler">
+        <property name="attributeSource" ref="jmxAttributeSource"/>
+    </bean>
+
+    <!-- will pick up the ObjectName from the annotation -->
+    <bean id="namingStrategy"
+            class="org.springframework.jmx.export.naming.MetadataNamingStrategy">
+        <property name="attributeSource" ref="jmxAttributeSource"/>
+    </bean>
+
+    <bean id="testBean" class="org.springframework.jmx.AnnotationTestBean">
+        <property name="name" value="TEST"/>
+        <property name="age" value="100"/>
+    </bean>
+</beans>
+```
+在前面的示例中，MetadataMBeanInfoAssembler已经为Bean配置了AnnotationJmxAttributeSource该类的实例，并通过MBeanExporter 汇编程序属性将其传递给。这是利用Spring公开的MBean的元数据驱动的管理接口所需要的全部。
+#### 5.2.3. 源级元数据类型
+下表描述了可在Spring JMX中使用的源级别元数据类型：
+
+表7.源级元数据类型
+目的	注解	注释类型
+将a的所有实例标记Class为JMX托管资源。
+
+@ManagedResource
+
+类
+
+将方法标记为JMX操作。
+
+@ManagedOperation
+
+方法
+
+将一个getter或setter标记为JMX属性的一半。
+
+@ManagedAttribute
+
+方法（仅getter和setter）
+
+定义操作参数的描述。
+
+@ManagedOperationParameter 和 @ManagedOperationParameters
+
+方法
+
+下表描述了可在这些源级元数据类型上使用的配置参数：
+
+表8.源级元数据参数
+参数	描述	适用于
+ObjectName
+
+用于MetadataNamingStrategy确定ObjectName托管资源的。
+
+ManagedResource
+
+description
+
+设置资源，属性或操作的友好描述。
+
+ManagedResource，ManagedAttribute，ManagedOperation，或者ManagedOperationParameter
+
+currencyTimeLimit
+
+设置currencyTimeLimit描述符字段的值。
+
+ManagedResource 要么 ManagedAttribute
+
+defaultValue
+
+设置defaultValue描述符字段的值。
+
+ManagedAttribute
+
+log
+
+设置log描述符字段的值。
+
+ManagedResource
+
+logFile
+
+设置logFile描述符字段的值。
+
+ManagedResource
+
+persistPolicy
+
+设置persistPolicy描述符字段的值。
+
+ManagedResource
+
+persistPeriod
+
+设置persistPeriod描述符字段的值。
+
+ManagedResource
+
+persistLocation
+
+设置persistLocation描述符字段的值。
+
+ManagedResource
+
+persistName
+
+设置persistName描述符字段的值。
+
+ManagedResource
+
+name
+
+设置操作参数的显示名称。
+
+ManagedOperationParameter
+
+index
+
+设置操作参数的索引。
+
+ManagedOperationParameter
+#### 5.2.4. 用AutodetectCapableMBeanInfoAssembler介面
+为了进一步简化配置，Spring包含了该 AutodetectCapableMBeanInfoAssembler接口，该MBeanInfoAssembler 接口扩展了该接口以添加对自动检测MBean资源的支持。如果您MBeanExporter使用实例配置 AutodetectCapableMBeanInfoAssembler，则可以对包含的Bean进行“投票”以暴露给JMX。
+
+该AutodetectCapableMBeanInfo接口的唯一实现是MetadataMBeanInfoAssembler，该投票将包括该ManagedResource属性标记的任何bean 。在这种情况下，默认方法是将Bean名称用作ObjectName，这将导致类似于以下内容的配置：
+```xml
+<beans>
+
+    <bean id="exporter" class="org.springframework.jmx.export.MBeanExporter">
+        <!-- notice how no 'beans' are explicitly configured here -->
+        <property name="autodetect" value="true"/>
+        <property name="assembler" ref="assembler"/>
+    </bean>
+
+    <bean id="testBean" class="org.springframework.jmx.JmxTestBean">
+        <property name="name" value="TEST"/>
+        <property name="age" value="100"/>
+    </bean>
+
+    <bean id="assembler" class="org.springframework.jmx.export.assembler.MetadataMBeanInfoAssembler">
+        <property name="attributeSource">
+            <bean class="org.springframework.jmx.export.annotation.AnnotationJmxAttributeSource"/>
+        </property>
+    </bean>
+
+</beans>
+```
+请注意，在上述配置中，没有将任何bean传递给MBeanExporter。但是，由于JmxTestBean仍使用ManagedResource 属性标记并MetadataMBeanInfoAssembler检测到该属性并对其进行表决，因此该属性仍处于注册状态。这种方法的唯一问题是JmxTestBeannow的名称具有商业意义。您可以通过更改“控制Bean实例”中ObjectName 定义的默认创建行为来解决此问题。ObjectName
+#### 5.2.5. 使用Java接口定义管理接口
+除了之外MetadataMBeanInfoAssembler，Spring还包括 InterfaceBasedMBeanInfoAssembler，您可以使用来约束基于接口集合中定义的方法集公开的方法和属性。
+
+尽管公开MBean的标准机制是使用接口和简单的命名方案，InterfaceBasedMBeanInfoAssembler但是通过消除对命名约定的需要，允许您使用多个接口以及消除对实现MBean接口的bean的需求，扩展了此功能。
+
+考虑以下接口，该接口用于为JmxTestBean我们前面显示的类定义管理接口 ：
+```java
+public interface IJmxTestBean {
+
+    public int add(int x, int y);
+
+    public long myOperation();
+
+    public int getAge();
+
+    public void setAge(int age);
+
+    public void setName(String name);
+
+    public String getName();
+
+}
+```
+该接口定义在JMX MBean上作为操作和属性公开的方法和属性。以下代码显示了如何配置Spring JMX以使用此接口作为管理接口的定义：
+```xml
+<beans>
+
+    <bean id="exporter" class="org.springframework.jmx.export.MBeanExporter">
+        <property name="beans">
+            <map>
+                <entry key="bean:name=testBean5" value-ref="testBean"/>
+            </map>
+        </property>
+        <property name="assembler">
+            <bean class="org.springframework.jmx.export.assembler.InterfaceBasedMBeanInfoAssembler">
+                <property name="managedInterfaces">
+                    <value>org.springframework.jmx.IJmxTestBean</value>
+                </property>
+            </bean>
+        </property>
+    </bean>
+
+    <bean id="testBean" class="org.springframework.jmx.JmxTestBean">
+        <property name="name" value="TEST"/>
+        <property name="age" value="100"/>
+    </bean>
+
+</beans>
+```
+在前面的示例中，将InterfaceBasedMBeanInfoAssembler其配置为IJmxTestBean在构造任何bean的管理接口时使用该 接口。重要的是要理解，InterfaceBasedMBeanInfoAssembler 不需要由处理的bean来实现用于生成JMX管理接口的接口。
+
+在上述情况下，该IJmxTestBean接口用于为所有bean构造所有管理接口。在许多情况下，这不是理想的行为，您可能想对不同的bean使用不同的接口。在这种情况下，您可以通过该 属性传递 InterfaceBasedMBeanInfoAssembler一个Properties实例interfaceMappings，其中每个条目的键是Bean名称，每个条目的值是一个逗号分隔的接口名称列表，用于该Bean。
+
+如果没有通过managedInterfaces或 interfaceMappings属性指定管理接口，则InterfaceBasedMBeanInfoAssemblerref会反映在bean上，并使用该bean实现的所有接口来创建管理接口。
+#### 5.2.6. 使用MethodNameBasedMBeanInfoAssembler
+MBeanInfoAssembler接口
+5.2.2。使用源级元数据：Java注释
+5.2.3。源级元数据类型
+5.2.4。使用AutodetectCapableMBeanInfoAssembler接口
+5.2.5。使用Java接口定义管理接口
+5.2.6。使用MethodNameBasedMBeanInfoAssembler
+5.3。控制您的Bean的ObjectName实例
+5.4。使用JSR-160连接器
+5.5。通过代理访问MBean
+5.6。通知事项
+5.7。更多资源
+6.电子邮件
+7.任务执行和计划
+8.缓存抽象
+9.附录
+参考文档的这一部分涵盖了Spring Framework与多种技术的集成。
+
+1. REST端点
+Spring框架提供了两种选择来调用REST端点：
+
+RestTemplate：具有同步模板方法API的原始Spring REST客户端。
+
+WebClient：一种非阻塞的，反应性的替代方案，它支持同步和异步以及流方案。
+
+从5.0版本开始，RestTemplate它处于维护模式，以后只有很少的更改和错误请求被接受。请考虑使用提供更现代API并支持同步，异步和流方案的 WebClient。
+1.1。 RestTemplate
+在RestTemplate通过HTTP客户端库提供了一个更高水平的API。它使在一行中轻松调用REST端点变得容易。它公开了以下几组重载方法：
+
+表1. RestTemplate方法
+方法组	描述
+getForObject
+
+通过GET检索表示形式。
+
+getForEntity
+
+ResponseEntity使用GET检索（即状态，标题和正文）。
+
+headForHeaders
+
+通过使用HEAD检索资源的所有标头。
+
+postForLocation
+
+通过使用POST创建新资源，并Location从响应中返回标头。
+
+postForObject
+
+通过使用POST创建新资源，并从响应中返回表示形式。
+
+postForEntity
+
+通过使用POST创建新资源，并从响应中返回表示形式。
+
+put
+
+通过使用PUT创建或更新资源。
+
+patchForObject
+
+通过使用PATCH更新资源，并从响应中返回表示形式。请注意，JDKHttpURLConnection不支持PATCH，但是Apache HttpComponents和其他支持。
+
+delete
+
+使用DELETE删除指定URI处的资源。
+
+optionsForAllow
+
+通过使用ALLOW检索资源的允许的HTTP方法。
+
+exchange
+
+前述方法的通用性强（且意见少的）版本，在需要时提供了额外的灵活性。它接受RequestEntity（包括HTTP方法，URL，标头和正文作为输入）并返回ResponseEntity。
+
+这些方法允许使用ParameterizedTypeReference而不是Class使用泛型来指定响应类型。
+
+execute
+
+执行请求的最通用方法，完全控制通过回调接口进行的请求准备和响应提取。
+
+1.1.1。初始化
+默认构造函数用于java.net.HttpURLConnection执行请求。您可以使用的实现切换到其他HTTP库ClientHttpRequestFactory。内置支持以下内容：
+
+Apache HttpComponents
+
+净额
+
+OkHttp
+
+例如，要切换到Apache HttpComponents，可以使用以下命令：
+
+RestTemplate template = new RestTemplate(new HttpComponentsClientHttpRequestFactory());
+Each ClientHttpRequestFactory exposes configuration options specific to the underlying HTTP client library — for example, for credentials, connection pooling, and other details.
+
+Note that the java.net implementation for HTTP requests can raise an exception when accessing the status of a response that represents an error (such as 401). If this is an issue, switch to another HTTP client library.
+URIs
+Many of the RestTemplate methods accept a URI template and URI template variables, either as a String variable argument, or as Map<String,String>.
+
+The following example uses a String variable argument:
+
+String result = restTemplate.getForObject(
+        "https://example.com/hotels/{hotel}/bookings/{booking}", String.class, "42", "21");
+The following example uses a Map<String, String>:
+
+Map<String, String> vars = Collections.singletonMap("hotel", "42");
+
+String result = restTemplate.getForObject(
+        "https://example.com/hotels/{hotel}/rooms/{hotel}", String.class, vars);
+Keep in mind URI templates are automatically encoded, as the following example shows:
+
+restTemplate.getForObject("https://example.com/hotel list", String.class);
+
+// Results in request to "https://example.com/hotel%20list"
+You can use the uriTemplateHandler property of RestTemplate to customize how URIs are encoded. Alternatively, you can prepare a java.net.URI and pass it into one of the RestTemplate methods that accepts a URI.
+
+For more details on working with and encoding URIs, see URI Links.
+
+Headers
+You can use the exchange() methods to specify request headers, as the following example shows:
+
+String uriTemplate = "https://example.com/hotels/{hotel}";
+URI uri = UriComponentsBuilder.fromUriString(uriTemplate).build(42);
+
+RequestEntity<Void> requestEntity = RequestEntity.get(uri)
+        .header(("MyRequestHeader", "MyValue")
+        .build();
+
+ResponseEntity<String> response = template.exchange(requestEntity, String.class);
+
+String responseHeader = response.getHeaders().getFirst("MyResponseHeader");
+String body = response.getBody();
+You can obtain response headers through many RestTemplate method variants that return ResponseEntity.
+
+1.1.2. Body
+Objects passed into and returned from RestTemplate methods are converted to and from raw content with the help of an HttpMessageConverter.
+
+On a POST, an input object is serialized to the request body, as the following example shows:
+
+URI location = template.postForLocation("https://example.com/people", person);
+You need not explicitly set the Content-Type header of the request. In most cases, you can find a compatible message converter based on the source Object type, and the chosen message converter sets the content type accordingly. If necessary, you can use the exchange methods to explicitly provide the Content-Type request header, and that, in turn, influences what message converter is selected.
+
+On a GET, the body of the response is deserialized to an output Object, as the following example shows:
+
+Person person = restTemplate.getForObject("https://example.com/people/{id}", Person.class, 42);
+The Accept header of the request does not need to be explicitly set. In most cases, a compatible message converter can be found based on the expected response type, which then helps to populate the Accept header. If necessary, you can use the exchange methods to provide the Accept header explicitly.
+
+By default, RestTemplate registers all built-in message converters, depending on classpath checks that help to determine what optional conversion libraries are present. You can also set the message converters to use explicitly.
+
+1.1.3. Message Conversion
+WebFlux
+
+The spring-web module contains the HttpMessageConverter contract for reading and writing the body of HTTP requests and responses through InputStream and OutputStream. HttpMessageConverter instances are used on the client side (for example, in the RestTemplate) and on the server side (for example, in Spring MVC REST controllers).
+
+Concrete implementations for the main media (MIME) types are provided in the framework and are, by default, registered with the RestTemplate on the client side and with RequestMethodHandlerAdapter on the server side (see Configuring Message Converters).
+
+The implementations of HttpMessageConverter are described in the following sections. For all converters, a default media type is used, but you can override it by setting the supportedMediaTypes bean property. The following table describes each implementation:
+
+Table 2. HttpMessageConverter Implementations
+MessageConverter	Description
+StringHttpMessageConverter
+
+An HttpMessageConverter implementation that can read and write String instances from the HTTP request and response. By default, this converter supports all text media types (text/*) and writes with a Content-Type of text/plain.
+
+FormHttpMessageConverter
+
+An HttpMessageConverter implementation that can read and write form data from the HTTP request and response. By default, this converter reads and writes the application/x-www-form-urlencoded media type. Form data is read from and written into a MultiValueMap<String, String>. The converter can also write (but not read) multipart data read from a MultiValueMap<String, Object>. By default, multipart/form-data is supported. As of Spring Framework 5.2, additional multipart subtypes can be supported for writing form data. Consult the javadoc for FormHttpMessageConverter for further details.
+
+ByteArrayHttpMessageConverter
+
+An HttpMessageConverter implementation that can read and write byte arrays from the HTTP request and response. By default, this converter supports all media types (*/*) and writes with a Content-Type of application/octet-stream. You can override this by setting the supportedMediaTypes property and overriding getContentType(byte[]).
+
+MarshallingHttpMessageConverter
+
+An HttpMessageConverter implementation that can read and write XML by using Spring’s Marshaller and Unmarshaller abstractions from the org.springframework.oxm package. This converter requires a Marshaller and Unmarshaller before it can be used. You can inject these through constructor or bean properties. By default, this converter supports text/xml and application/xml.
+
+MappingJackson2HttpMessageConverter
+
+An HttpMessageConverter implementation that can read and write JSON by using Jackson’s ObjectMapper. You can customize JSON mapping as needed through the use of Jackson’s provided annotations. When you need further control (for cases where custom JSON serializers/deserializers need to be provided for specific types), you can inject a custom ObjectMapper through the ObjectMapper property. By default, this converter supports application/json.
+
+MappingJackson2XmlHttpMessageConverter
+
+An HttpMessageConverter implementation that can read and write XML by using Jackson XML extension’s XmlMapper. You can customize XML mapping as needed through the use of JAXB or Jackson’s provided annotations. When you need further control (for cases where custom XML serializers/deserializers need to be provided for specific types), you can inject a custom XmlMapper through the ObjectMapper property. By default, this converter supports application/xml.
+
+SourceHttpMessageConverter
+
+An HttpMessageConverter implementation that can read and write javax.xml.transform.Source from the HTTP request and response. Only DOMSource, SAXSource, and StreamSource are supported. By default, this converter supports text/xml and application/xml.
+
+BufferedImageHttpMessageConverter
+
+An HttpMessageConverter implementation that can read and write java.awt.image.BufferedImage from the HTTP request and response. This converter reads and writes the media type supported by the Java I/O API.
+
+1.1.4. Jackson JSON Views
+You can specify a Jackson JSON View to serialize only a subset of the object properties, as the following example shows:
+
+MappingJacksonValue value = new MappingJacksonValue(new User("eric", "7!jd#h23"));
+value.setSerializationView(User.WithoutPasswordView.class);
+
+RequestEntity<MappingJacksonValue> requestEntity =
+    RequestEntity.post(new URI("https://example.com/user")).body(value);
+
+ResponseEntity<String> response = template.exchange(requestEntity, String.class);
+Multipart
+To send multipart data, you need to provide a MultiValueMap<String, Object> whose values may be an Object for part content, a Resource for a file part, or an HttpEntity for part content with headers. For example:
+
+MultiValueMap<String, Object> parts = new LinkedMultiValueMap<>();
+
+parts.add("fieldPart", "fieldValue");
+parts.add("filePart", new FileSystemResource("...logo.png"));
+parts.add("jsonPart", new Person("Jason"));
+
+HttpHeaders headers = new HttpHeaders();
+headers.setContentType(MediaType.APPLICATION_XML);
+parts.add("xmlPart", new HttpEntity<>(myBean, headers));
+In most cases, you do not have to specify the Content-Type for each part. The content type is determined automatically based on the HttpMessageConverter chosen to serialize it or, in the case of a Resource based on the file extension. If necessary, you can explicitly provide the MediaType with an HttpEntity wrapper.
+
+Once the MultiValueMap is ready, you can pass it to the RestTemplate, as show below:
+
+MultiValueMap<String, Object> parts = ...;
+template.postForObject("https://example.com/upload", parts, Void.class);
+If the MultiValueMap contains at least one non-String value, the Content-Type is set to multipart/form-data by the FormHttpMessageConverter. If the MultiValueMap has String values the Content-Type is defaulted to application/x-www-form-urlencoded. If necessary the Content-Type may also be set explicitly.
+
+1.2. Using AsyncRestTemplate (Deprecated)
+The AsyncRestTemplate is deprecated. For all use cases where you might consider using AsyncRestTemplate, use the WebClient instead.
+
+2. Remoting and Web Services
+Spring provides support for remoting with various technologies. The remoting support eases the development of remote-enabled services, implemented via Java interfaces and objects as input and output. Currently, Spring supports the following remoting technologies:
+
+Java Web Services: Spring provides remoting support for web services through JAX-WS.
+
+AMQP: Remoting via AMQP as the underlying protocol is supported by the separate Spring AMQP project.
+
+As of Spring Framework 5.3, support for several remoting technologies is now deprecated for security reasons and broader industry support. Supporting infrastructure will be removed from Spring Framework for its next major release.
+The following remoting technologies are now deprecated and will not be replaced:
+
+Remote Method Invocation (RMI): Through the use of RmiProxyFactoryBean and RmiServiceExporter, Spring supports both traditional RMI (with java.rmi.Remote interfaces and java.rmi.RemoteException) and transparent remoting through RMI invokers (with any Java interface).
+
+Spring HTTP Invoker (Deprecated): Spring provides a special remoting strategy that allows for Java serialization though HTTP, supporting any Java interface (as the RMI invoker does). The corresponding support classes are HttpInvokerProxyFactoryBean and HttpInvokerServiceExporter.
+
+Hessian: By using Spring’s HessianProxyFactoryBean and the HessianServiceExporter, you can transparently expose your services through the lightweight binary HTTP-based protocol provided by Caucho.
+
+JMS (Deprecated): Remoting via JMS as the underlying protocol is supported through the JmsInvokerServiceExporter and JmsInvokerProxyFactoryBean classes in the spring-jms module.
+
+While discussing the remoting capabilities of Spring, we use the following domain model and corresponding services:
+
+public class Account implements Serializable{
+
+    private String name;
+    
+    public String getName(){
+        return name;
+    }
+    
+    public void setName(String name) {
+        this.name = name;
+    }
+}
+public interface AccountService {
+
+    public void insertAccount(Account account);
+    
+    public List<Account> getAccounts(String name);
+}
+// the implementation doing nothing at the moment
+public class AccountServiceImpl implements AccountService {
+
+    public void insertAccount(Account acc) {
+        // do something...
+    }
+    
+    public List<Account> getAccounts(String name) {
+        // do something...
+    }
+}
+This section starts by exposing the service to a remote client by using RMI and talk a bit about the drawbacks of using RMI. It then continues with an example that uses Hessian as the protocol.
+
+2.1. AMQP
+Remoting via AMQP as the underlying protocol is supported in the Spring AMQP project. For further details please visit the Spring Remoting section of the Spring AMQP reference.
+
+Auto-detection is not implemented for remote interfaces
+
+The main reason why auto-detection of implemented interfaces does not occur for remote interfaces is to avoid opening too many doors to remote callers. The target object might implement internal callback interfaces, such as InitializingBean or DisposableBean which one would not want to expose to callers.
+
+Offering a proxy with all interfaces implemented by the target usually does not matter in the local case. However, when you export a remote service, you should expose a specific service interface, with specific operations intended for remote usage. Besides internal callback interfaces, the target might implement multiple business interfaces, with only one of them intended for remote exposure. For these reasons, we require such a service interface to be specified.
+
+This is a trade-off between configuration convenience and the risk of accidental exposure of internal methods. Always specifying a service interface is not too much effort and puts you on the safe side regarding controlled exposure of specific methods.
+
+2.2. Considerations when Choosing a Technology
+Each and every technology presented here has its drawbacks. When choosing a technology, you should carefully consider your needs, the services you expose, and the objects you send over the wire.
+
+When using RMI, you cannot access the objects through the HTTP protocol, unless you tunnel the RMI traffic. RMI is a fairly heavy-weight protocol, in that it supports full-object serialization, which is important when you use a complex data model that needs serialization over the wire. However, RMI-JRMP is tied to Java clients. It is a Java-to-Java remoting solution.
+
+Spring’s HTTP invoker is a good choice if you need HTTP-based remoting but also rely on Java serialization. It shares the basic infrastructure with RMI invokers but uses HTTP as transport. Note that HTTP invokers are not limited only to Java-to-Java remoting but also to Spring on both the client and the server side. (The latter also applies to Spring’s RMI invoker for non-RMI interfaces.)
+
+Hessian might provide significant value when operating in a heterogeneous environment, because they explicitly allow for non-Java clients. However, non-Java support is still limited. Known issues include the serialization of Hibernate objects in combination with lazily-initialized collections. If you have such a data model, consider using RMI or HTTP invokers instead of Hessian.
+
+JMS can be useful for providing clusters of services and letting the JMS broker take care of load balancing, discovery, and auto-failover. By default, Java serialization is used for JMS remoting, but the JMS provider could use a different mechanism for the wire formatting, such as XStream to let servers be implemented in other technologies.
+
+Last but not least, EJB has an advantage over RMI, in that it supports standard role-based authentication and authorization and remote transaction propagation. It is possible to get RMI invokers or HTTP invokers to support security context propagation as well, although this is not provided by core Spring. Spring offers only appropriate hooks for plugging in third-party or custom solutions.
+
+2.3. Java Web Services
+Spring provides full support for the standard Java web services APIs:
+
+Exposing web services using JAX-WS
+
+Accessing web services using JAX-WS
+
+In addition to stock support for JAX-WS in Spring Core, the Spring portfolio also features Spring Web Services, which is a solution for contract-first, document-driven web services — highly recommended for building modern, future-proof web services.
+
+2.3.1. Exposing Servlet-based Web Services by Using JAX-WS
+Spring provides a convenient base class for JAX-WS servlet endpoint implementations: SpringBeanAutowiringSupport. To expose our AccountService, we extend Spring’s SpringBeanAutowiringSupport class and implement our business logic here, usually delegating the call to the business layer. We use Spring’s @Autowired annotation to express such dependencies on Spring-managed beans. The following example shows our class that extends SpringBeanAutowiringSupport:
+
+/**
+ * JAX-WS compliant AccountService implementation that simply delegates
+ * to the AccountService implementation in the root web application context.
+ *
+ * This wrapper class is necessary because JAX-WS requires working with dedicated
+ * endpoint classes. If an existing service needs to be exported, a wrapper that
+ * extends SpringBeanAutowiringSupport for simple Spring bean autowiring (through
+ * the @Autowired annotation) is the simplest JAX-WS compliant way.
+ *
+ * This is the class registered with the server-side JAX-WS implementation.
+ * In the case of a Java EE server, this would simply be defined as a servlet
+ * in web.xml, with the server detecting that this is a JAX-WS endpoint and reacting
+ * accordingly. The servlet name usually needs to match the specified WS service name.
+ *
+ * The web service engine manages the lifecycle of instances of this class.
+ * Spring bean references will just be wired in here.
+ */
+import org.springframework.web.context.support.SpringBeanAutowiringSupport;
+
+@WebService(serviceName="AccountService")
+public class AccountServiceEndpoint extends SpringBeanAutowiringSupport {
+
+    @Autowired
+    private AccountService biz;
+    
+    @WebMethod
+    public void insertAccount(Account acc) {
+        biz.insertAccount(acc);
+    }
+    
+    @WebMethod
+    public Account[] getAccounts(String name) {
+        return biz.getAccounts(name);
+    }
+}
+Our AccountServiceEndpoint needs to run in the same web application as the Spring context to allow for access to Spring’s facilities. This is the case by default in Java EE environments, using the standard contract for JAX-WS servlet endpoint deployment. See the various Java EE web service tutorials for details.
+
+2.3.2. Exporting Standalone Web Services by Using JAX-WS
+The built-in JAX-WS provider that comes with Oracle’s JDK supports exposure of web services by using the built-in HTTP server that is also included in the JDK. Spring’s SimpleJaxWsServiceExporter detects all @WebService-annotated beans in the Spring application context and exports them through the default JAX-WS server (the JDK HTTP server).
+
+在这种情况下，终结点实例被定义和管理为Spring bean本身。它们已在JAX-WS引擎中注册，但是它们的生命周期取决于Spring应用程序上下文。这意味着您可以将Spring功能（例如显式依赖项注入）应用于端点实例。注释驱动的注入也@Autowired同样有效。以下示例显示了如何定义这些bean：
+
+<bean class="org.springframework.remoting.jaxws.SimpleJaxWsServiceExporter">
+    <property name="baseAddress" value="http://localhost:8080/"/>
+</bean>
+
+<bean id="accountServiceEndpoint" class="example.AccountServiceEndpoint">
+    ...
+</bean>
+
+...
+该AccountServiceEndpoint可以，但并没有从Spring的推导SpringBeanAutowiringSupport，因为在这个例子中，端点是完全春季管理的bean。这意味着端点实现可以如下所示（不声明任何超类，并且@Autowired仍采用Spring的配置注释）：
+
+@WebService(serviceName="AccountService")
+public class AccountServiceEndpoint {
+
+    @Autowired
+    private AccountService biz;
+    
+    @WebMethod
+    public void insertAccount(Account acc) {
+        biz.insertAccount(acc);
+    }
+    
+    @WebMethod
+    public List<Account> getAccounts(String name) {
+        return biz.getAccounts(name);
+    }
+}
+2.3.3。使用JAX-WS RI的Spring支持导出Web服务
+作为GlassFish项目的一部分开发的Oracle JAX-WS RI，将Spring支持作为其JAX-WS Commons项目的一部分。这允许将JAX-WS端点定义为Spring管理的Bean，类似于上一节中讨论的独立模式，  但是这次是在Servlet环境中。
+
+这在Java EE环境中不可移植。它主要适用于将JAX-WS RI嵌入为Web应用程序一部分的非EE环境，例如Tomcat。
+与导出基于servlet的终结点的标准样式的不同之处在于，终结点实例本身的生命周期由Spring管理，并且仅定义了一个JAX-WS servlet web.xml。使用标准的Java EE样式（如前所述），每个服务端点都有一个servlet定义，每个端点通常都委派给Spring Bean（@Autowired如前所述，通过使用）。
+
+有关 设置和使用样式的详细信息，请参见https://jax-ws-commons.java.net/spring/。
+
+2.3.4。使用JAX-WS访问Web服务
+Spring provides two factory beans to create JAX-WS web service proxies, namely LocalJaxWsServiceFactoryBean and JaxWsPortProxyFactoryBean. The former can return only a JAX-WS service class for us to work with. The latter is the full-fledged version that can return a proxy that implements our business service interface. In the following example, we use JaxWsPortProxyFactoryBean to create a proxy for the AccountService endpoint (again):
+
+<bean id="accountWebService" class="org.springframework.remoting.jaxws.JaxWsPortProxyFactoryBean">
+    <property name="serviceInterface" value="example.AccountService"/> 
+    <property name="wsdlDocumentUrl" value="http://localhost:8888/AccountServiceEndpoint?WSDL"/>
+    <property name="namespaceUri" value="https://example/"/>
+    <property name="serviceName" value="AccountService"/>
+    <property name="portName" value="AccountServiceEndpointPort"/>
+</bean>
+Where serviceInterface is our business interface that the clients use.
+wsdlDocumentUrl is the URL for the WSDL file. Spring needs this at startup time to create the JAX-WS Service. namespaceUri corresponds to the targetNamespace in the .wsdl file. serviceName corresponds to the service name in the .wsdl file. portName corresponds to the port name in the .wsdl file.
+
+Accessing the web service is easy, as we have a bean factory for it that exposes it as an interface called AccountService. The following example shows how we can wire this up in Spring:
+
+<bean id="client" class="example.AccountClientImpl">
+    ...
+    <property name="service" ref="accountWebService"/>
+</bean>
+From the client code, we can access the web service as if it were a normal class, as the following example shows:
+
+public class AccountClientImpl {
+
+    private AccountService service;
+    
+    public void setService(AccountService service) {
+        this.service = service;
+    }
+    
+    public void foo() {
+        service.insertAccount(...);
+    }
+}
+The above is slightly simplified in that JAX-WS requires endpoint interfaces and implementation classes to be annotated with @WebService, @SOAPBinding etc annotations. This means that you cannot (easily) use plain Java interfaces and implementation classes as JAX-WS endpoint artifacts; you need to annotate them accordingly first. Check the JAX-WS documentation for details on those requirements.
+2.4. RMI (Deprecated)
+As of Spring Framework 5.3, RMI support is deprecated and will not be replaced.
+By using Spring’s support for RMI, you can transparently expose your services through the RMI infrastructure. After having this set up, you basically have a configuration similar to remote EJBs, except for the fact that there is no standard support for security context propagation or remote transaction propagation. Spring does provide hooks for such additional invocation context when you use the RMI invoker, so you can, for example, plug in security frameworks or custom security credentials.
+
+2.4.1. Exporting the Service by Using RmiServiceExporter
+Using the RmiServiceExporter, we can expose the interface of our AccountService object as RMI object. The interface can be accessed by using RmiProxyFactoryBean, or via plain RMI in case of a traditional RMI service. The RmiServiceExporter explicitly supports the exposing of any non-RMI services via RMI invokers.
+
+We first have to set up our service in the Spring container. The following example shows how to do so:
+
+<bean id="accountService" class="example.AccountServiceImpl">
+    <!-- any additional properties, maybe a DAO? -->
+</bean>
+Next, we have to expose our service by using RmiServiceExporter. The following example shows how to do so:
+
+<bean class="org.springframework.remoting.rmi.RmiServiceExporter">
+    <!-- does not necessarily have to be the same name as the bean to be exported -->
+    <property name="serviceName" value="AccountService"/>
+    <property name="service" ref="accountService"/>
+    <property name="serviceInterface" value="example.AccountService"/>
+    <!-- defaults to 1099 -->
+    <property name="registryPort" value="1199"/>
+</bean>
+In the preceding example, we override the port for the RMI registry. Often, your application server also maintains an RMI registry, and it is wise to not interfere with that one. Furthermore, the service name is used to bind the service. So, in the preceding example, the service is bound at 'rmi://HOST:1199/AccountService'. We use this URL later on to link in the service at the client side.
+
+The servicePort property has been omitted (it defaults to 0). This means that an anonymous port is used to communicate with the service.
+2.4.2. Linking in the Service at the Client
+Our client is a simple object that uses the AccountService to manage accounts, as the following example shows:
+
+public class SimpleObject {
+
+    private AccountService accountService;
+    
+    public void setAccountService(AccountService accountService) {
+        this.accountService = accountService;
+    }
+    
+    // additional methods using the accountService
+}
+To link in the service on the client, we create a separate Spring container, to contain the following simple object and the service linking configuration bits:
+
+<bean class="example.SimpleObject">
+    <property name="accountService" ref="accountService"/>
+</bean>
+
+<bean id="accountService" class="org.springframework.remoting.rmi.RmiProxyFactoryBean">
+    <property name="serviceUrl" value="rmi://HOST:1199/AccountService"/>
+    <property name="serviceInterface" value="example.AccountService"/>
+</bean>
+That is all we need to do to support the remote account service on the client. Spring transparently creates an invoker and remotely enables the account service through the RmiServiceExporter. At the client, we link it in by using the RmiProxyFactoryBean.
+
+2.5. Using Hessian to Remotely Call Services through HTTP (Deprecated)
+As of Spring Framework 5.3, Hessian support is deprecated and will not be replaced.
+Hessian offers a binary HTTP-based remoting protocol. It is developed by Caucho, and you can find more information about Hessian itself at https://www.caucho.com/.
+
+2.5.1. Hessian
+Hessian communicates through HTTP and does so by using a custom servlet. By using Spring’s DispatcherServlet principles (see webmvc.html), we can wire up such a servlet to expose your services. First, we have to create a new servlet in our application, as shown in the following excerpt from web.xml:
+
+<servlet>
+    <servlet-name>remoting</servlet-name>
+    <servlet-class>org.springframework.web.servlet.DispatcherServlet</servlet-class>
+    <load-on-startup>1</load-on-startup>
+</servlet>
+
+<servlet-mapping>
+    <servlet-name>remoting</servlet-name>
+    <url-pattern>/remoting/*</url-pattern>
+</servlet-mapping>
+If you are familiar with Spring’s DispatcherServlet principles, you probably know that now you have to create a Spring container configuration resource named remoting-servlet.xml (after the name of your servlet) in the WEB-INF directory. The application context is used in the next section.
+
+Alternatively, consider the use of Spring’s simpler HttpRequestHandlerServlet. Doing so lets you embed the remote exporter definitions in your root application context (by default, in WEB-INF/applicationContext.xml), with individual servlet definitions pointing to specific exporter beans. In this case, each servlet name needs to match the bean name of its target exporter.
+
+2.5.2. Exposing Your Beans by Using HessianServiceExporter
+In the newly created application context called remoting-servlet.xml, we create a HessianServiceExporter to export our services, as the following example shows:
+
+<bean id="accountService" class="example.AccountServiceImpl">
+    <!-- any additional properties, maybe a DAO? -->
+</bean>
+
+<bean name="/AccountService" class="org.springframework.remoting.caucho.HessianServiceExporter">
+    <property name="service" ref="accountService"/>
+    <property name="serviceInterface" value="example.AccountService"/>
+</bean>
+Now we are ready to link in the service at the client. No explicit handler mapping is specified (to map request URLs onto services), so we use BeanNameUrlHandlerMapping used. Hence, the service is exported at the URL indicated through its bean name within the containing DispatcherServlet instance’s mapping (as defined earlier): https://HOST:8080/remoting/AccountService.
+
+Alternatively, you can create a HessianServiceExporter in your root application context (for example, in WEB-INF/applicationContext.xml), as the following example shows:
+
+<bean name="accountExporter" class="org.springframework.remoting.caucho.HessianServiceExporter">
+    <property name="service" ref="accountService"/>
+    <property name="serviceInterface" value="example.AccountService"/>
+</bean>
+In the latter case, you should define a corresponding servlet for this exporter in web.xml, with the same end result: The exporter gets mapped to the request path at /remoting/AccountService. Note that the servlet name needs to match the bean name of the target exporter. The following example shows how to do so:
+
+<servlet>
+    <servlet-name>accountExporter</servlet-name>
+    <servlet-class>org.springframework.web.context.support.HttpRequestHandlerServlet</servlet-class>
+</servlet>
+
+<servlet-mapping>
+    <servlet-name>accountExporter</servlet-name>
+    <url-pattern>/remoting/AccountService</url-pattern>
+</servlet-mapping>
+2.5.3. Linking in the Service on the Client
+By using the HessianProxyFactoryBean, we can link in the service at the client. The same principles apply as with the RMI example. We create a separate bean factory or application context and mention the following beans where the SimpleObject is by using the AccountService to manage accounts, as the following example shows:
+
+<bean class="example.SimpleObject">
+    <property name="accountService" ref="accountService"/>
+</bean>
+
+<bean id="accountService" class="org.springframework.remoting.caucho.HessianProxyFactoryBean">
+    <property name="serviceUrl" value="https://remotehost:8080/remoting/AccountService"/>
+    <property name="serviceInterface" value="example.AccountService"/>
+</bean>
+2.5.4. Applying HTTP Basic Authentication to a Service Exposed through Hessian
+One of the advantages of Hessian is that we can easily apply HTTP basic authentication, because both protocols are HTTP-based. Your normal HTTP server security mechanism can be applied through using the web.xml security features, for example. Usually, you need not use per-user security credentials here. Rather, you can use shared credentials that you define at the HessianProxyFactoryBean level (similar to a JDBC DataSource), as the following example shows:
+
+<bean class="org.springframework.web.servlet.handler.BeanNameUrlHandlerMapping">
+    <property name="interceptors" ref="authorizationInterceptor"/>
+</bean>
+
+<bean id="authorizationInterceptor"
+        class="org.springframework.web.servlet.handler.UserRoleAuthorizationInterceptor">
+    <property name="authorizedRoles" value="administrator,operator"/>
+</bean>
+In the preceding example, we explicitly mention the BeanNameUrlHandlerMapping and set an interceptor, to let only administrators and operators call the beans mentioned in this application context.
+
+The preceding example does not show a flexible kind of security infrastructure. For more options as far as security is concerned, have a look at the Spring Security project at https://projects.spring.io/spring-security/.
+2.6. Spring HTTP Invoker (Deprecated)
+As of Spring Framework 5.3, HTTP Invoker support is deprecated and will not be replaced.
+As opposed to Hessian, Spring HTTP invokers are both lightweight protocols that use their own slim serialization mechanisms and use the standard Java serialization mechanism to expose services through HTTP. This has a huge advantage if your arguments and return types are complex types that cannot be serialized by using the serialization mechanisms Hessian uses (see the next section for more considerations when you choose a remoting technology).
+
+Under the hood, Spring uses either the standard facilities provided by the JDK or Apache HttpComponents to perform HTTP calls. If you need more advanced and easier-to-use functionality, use the latter. See hc.apache.org/httpcomponents-client-ga/ for more information.
+
+Be aware of vulnerabilities due to unsafe Java deserialization: Manipulated input streams can lead to unwanted code execution on the server during the deserialization step. As a consequence, do not expose HTTP invoker endpoints to untrusted clients. Rather, expose them only between your own services. In general, we strongly recommend using any other message format (such as JSON) instead.
+
+If you are concerned about security vulnerabilities due to Java serialization, consider the general-purpose serialization filter mechanism at the core JVM level, originally developed for JDK 9 but backported to JDK 8, 7 and 6 in the meantime. See https://blogs.oracle.com/java-platform-group/entry/incoming_filter_serialization_data_a and https://openjdk.java.net/jeps/290.
+
+2.6.1. Exposing the Service Object
+Setting up the HTTP invoker infrastructure for a service object closely resembles the way you would do the same by using Hessian. As Hessian support provides HessianServiceExporter, Spring’s HttpInvoker support provides org.springframework.remoting.httpinvoker.HttpInvokerServiceExporter.
+
+To expose the AccountService (mentioned earlier) within a Spring Web MVC DispatcherServlet, the following configuration needs to be in place in the dispatcher’s application context, as the following example shows:
+
+<bean name="/AccountService" class="org.springframework.remoting.httpinvoker.HttpInvokerServiceExporter">
+    <property name="service" ref="accountService"/>
+    <property name="serviceInterface" value="example.AccountService"/>
+</bean>
+Such an exporter definition is exposed through the DispatcherServlet instance’s standard mapping facilities, as explained in the section on Hessian.
+
+Alternatively, you can create an HttpInvokerServiceExporter in your root application context (for example, in 'WEB-INF/applicationContext.xml'), as the following example shows:
+
+<bean name="accountExporter" class="org.springframework.remoting.httpinvoker.HttpInvokerServiceExporter">
+    <property name="service" ref="accountService"/>
+    <property name="serviceInterface" value="example.AccountService"/>
+</bean>
+In addition, you can define a corresponding servlet for this exporter in web.xml, with the servlet name matching the bean name of the target exporter, as the following example shows:
+
+<servlet>
+    <servlet-name>accountExporter</servlet-name>
+    <servlet-class>org.springframework.web.context.support.HttpRequestHandlerServlet</servlet-class>
+</servlet>
+
+<servlet-mapping>
+    <servlet-name>accountExporter</servlet-name>
+    <url-pattern>/remoting/AccountService</url-pattern>
+</servlet-mapping>
+2.6.2. Linking in the Service at the Client
+Again, linking in the service from the client much resembles the way you would do it when you use Hessian. By using a proxy, Spring can translate your calls to HTTP POST requests to the URL that points to the exported service. The following example shows how to configure this arrangement:
+
+<bean id="httpInvokerProxy" class="org.springframework.remoting.httpinvoker.HttpInvokerProxyFactoryBean">
+    <property name="serviceUrl" value="https://remotehost:8080/remoting/AccountService"/>
+    <property name="serviceInterface" value="example.AccountService"/>
+</bean>
+As mentioned earlier, you can choose what HTTP client you want to use. By default, the HttpInvokerProxy uses the JDK’s HTTP functionality, but you can also use the Apache HttpComponents client by setting the httpInvokerRequestExecutor property. The following example shows how to do so:
+
+<property name="httpInvokerRequestExecutor">
+    <bean class="org.springframework.remoting.httpinvoker.HttpComponentsHttpInvokerRequestExecutor"/>
+</property>
+2.7. JMS (Deprecated)
+As of Spring Framework 5.3, JMS remoting support is deprecated and will not be replaced.
+You can also expose services transparently by using JMS as the underlying communication protocol. The JMS remoting support in the Spring Framework is pretty basic. It sends and receives on the same thread and in the same non-transactional Session. As a result, throughput is implementation-dependent. Note that these single-threaded and non-transactional constraints apply only to Spring’s JMS remoting support. See JMS (Java Message Service) for information on Spring’s rich support for JMS-based messaging.
+
+The following interface is used on both the server and the client sides:
+
+package com.foo;
+
+public interface CheckingAccountService {
+
+    public void cancelAccount(Long accountId);
+}
+The following simple implementation of the preceding interface is used on the server-side:
+
+package com.foo;
+
+public class SimpleCheckingAccountService implements CheckingAccountService {
+
+    public void cancelAccount(Long accountId) {
+        System.out.println("Cancelling account [" + accountId + "]");
+    }
+}
+The following configuration file contains the JMS-infrastructure beans that are shared on both the client and the server:
+
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.springframework.org/schema/beans
+        https://www.springframework.org/schema/beans/spring-beans.xsd">
+
+    <bean id="connectionFactory" class="org.apache.activemq.ActiveMQConnectionFactory">
+        <property name="brokerURL" value="tcp://ep-t43:61616"/>
+    </bean>
+    
+    <bean id="queue" class="org.apache.activemq.command.ActiveMQQueue">
+        <constructor-arg value="mmm"/>
+    </bean>
+
+</beans>
+2.7.1. Server-side Configuration
+On the server, you need to expose the service object that uses the JmsInvokerServiceExporter, as the following example shows:
+
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.springframework.org/schema/beans
+        https://www.springframework.org/schema/beans/spring-beans.xsd">
+
+    <bean id="checkingAccountService"
+            class="org.springframework.jms.remoting.JmsInvokerServiceExporter">
+        <property name="serviceInterface" value="com.foo.CheckingAccountService"/>
+        <property name="service">
+            <bean class="com.foo.SimpleCheckingAccountService"/>
+        </property>
+    </bean>
+    
+    <bean class="org.springframework.jms.listener.SimpleMessageListenerContainer">
+        <property name="connectionFactory" ref="connectionFactory"/>
+        <property name="destination" ref="queue"/>
+        <property name="concurrentConsumers" value="3"/>
+        <property name="messageListener" ref="checkingAccountService"/>
+    </bean>
+
+</beans>
+package com.foo;
+
+import org.springframework.context.support.ClassPathXmlApplicationContext;
+
+public class Server {
+
+    public static void main(String[] args) throws Exception {
+        new ClassPathXmlApplicationContext("com/foo/server.xml", "com/foo/jms.xml");
+    }
+}
+2.7.2. Client-side Configuration
+The client merely needs to create a client-side proxy that implements the agreed-upon interface (CheckingAccountService).
+
+The following example defines beans that you can inject into other client-side objects (and the proxy takes care of forwarding the call to the server-side object via JMS):
+
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.springframework.org/schema/beans
+        https://www.springframework.org/schema/beans/spring-beans.xsd">
+
+    <bean id="checkingAccountService"
+            class="org.springframework.jms.remoting.JmsInvokerProxyFactoryBean">
+        <property name="serviceInterface" value="com.foo.CheckingAccountService"/>
+        <property name="connectionFactory" ref="connectionFactory"/>
+        <property name="queue" ref="queue"/>
+    </bean>
+
+</beans>
+package com.foo;
+
+import org.springframework.context.ApplicationContext;
+import org.springframework.context.support.ClassPathXmlApplicationContext;
+
+public class Client {
+
+    public static void main(String[] args) throws Exception {
+        ApplicationContext ctx = new ClassPathXmlApplicationContext("com/foo/client.xml", "com/foo/jms.xml");
+        CheckingAccountService service = (CheckingAccountService) ctx.getBean("checkingAccountService");
+        service.cancelAccount(new Long(10));
+    }
+}
+3. Enterprise JavaBeans (EJB) Integration
+As a lightweight container, Spring is often considered an EJB replacement. We do believe that for many, if not most, applications and use cases, Spring, as a container, combined with its rich supporting functionality in the area of transactions, ORM and JDBC access, is a better choice than implementing equivalent functionality through an EJB container and EJBs.
+
+However, it is important to note that using Spring does not prevent you from using EJBs. In fact, Spring makes it much easier to access EJBs and implement EJBs and functionality within them. Additionally, using Spring to access services provided by EJBs allows the implementation of those services to later transparently be switched between local EJB, remote EJB, or POJO (plain old Java object) variants, without the client code having to be changed.
+
+In this chapter, we look at how Spring can help you access and implement EJBs. Spring provides particular value when accessing stateless session beans (SLSBs), so we begin by discussing this topic.
+
+3.1. Accessing EJBs
+This section covers how to access EJBs.
+
+3.1.1. Concepts
+To invoke a method on a local or remote stateless session bean, client code must normally perform a JNDI lookup to obtain the (local or remote) EJB Home object and then use a create method call on that object to obtain the actual (local or remote) EJB object. One or more methods are then invoked on the EJB.
+
+To avoid repeated low-level code, many EJB applications use the Service Locator and Business Delegate patterns. These are better than spraying JNDI lookups throughout client code, but their usual implementations have significant disadvantages:
+
+Typically, code that uses EJBs depends on Service Locator or Business Delegate singletons, making it hard to test.
+
+In the case of the Service Locator pattern used without a Business Delegate, application code still ends up having to invoke the create() method on an EJB home and deal with the resulting exceptions. Thus, it remains tied to the EJB API and the complexity of the EJB programming model.
+
+Implementing the Business Delegate pattern typically results in significant code duplication, where we have to write numerous methods that call the same method on the EJB.
+
+The Spring approach is to allow the creation and use of proxy objects (normally configured inside a Spring container), which act as codeless business delegates. You need not write another Service Locator, another JNDI lookup, or duplicate methods in a hand-coded Business Delegate unless you actually add real value in such code.
+
+3.1.2. Accessing Local SLSBs
+Assume that we have a web controller that needs to use a local EJB. We follow best practice and use the EJB Business Methods Interface pattern, so that the EJB’s local interface extends a non-EJB-specific business methods interface. We call this business methods interface MyComponent. The following example shows such an interface:
+
+public interface MyComponent {
+    ...
+}
+One of the main reasons to use the Business Methods Interface pattern is to ensure that synchronization between method signatures in local interface and bean implementation class is automatic. Another reason is that it later makes it much easier for us to switch to a POJO (plain old Java object) implementation of the service if it makes sense to do so. We also need to implement the local home interface and provide an implementation class that implements SessionBean and the MyComponent business methods interface. Now, the only Java coding we need to do to hook up our web tier controller to the EJB implementation is to expose a setter method of type MyComponent on the controller. This saves the reference as an instance variable in the controller. The following example shows how to do so:
+
+private MyComponent myComponent;
+
+public void setMyComponent(MyComponent myComponent) {
+    this.myComponent = myComponent;
+}
+We can subsequently use this instance variable in any business method in the controller. Now, assuming we obtain our controller object out of a Spring container, we can (in the same context) configure a LocalStatelessSessionProxyFactoryBean instance, which is the EJB proxy object. We configure the proxy and set the myComponent property of the controller with the following configuration entry:
+
+<bean id="myComponent"
+        class="org.springframework.ejb.access.LocalStatelessSessionProxyFactoryBean">
+    <property name="jndiName" value="ejb/myBean"/>
+    <property name="businessInterface" value="com.mycom.MyComponent"/>
+</bean>
+
+<bean id="myController" class="com.mycom.myController">
+    <property name="myComponent" ref="myComponent"/>
+</bean>
+A lot of work happens behind the scenes, courtesy of the Spring AOP framework, although you are not forced to work with AOP concepts to enjoy the results. The myComponent bean definition creates a proxy for the EJB, which implements the business method interface. The EJB local home is cached on startup, so there is only a single JNDI lookup. Each time the EJB is invoked, the proxy invokes the classname method on the local EJB and invokes the corresponding business method on the EJB.
+
+The myController bean definition sets the myComponent property of the controller class to the EJB proxy.
+
+Alternatively (and preferably in case of many such proxy definitions), consider using the <jee:local-slsb> configuration element in Spring’s “jee” namespace. The following example shows how to do so:
+
+<jee:local-slsb id="myComponent" jndi-name="ejb/myBean"
+        business-interface="com.mycom.MyComponent"/>
+
+<bean id="myController" class="com.mycom.myController">
+    <property name="myComponent" ref="myComponent"/>
+</bean>
+This EJB access mechanism delivers huge simplification of application code. The web tier code (or other EJB client code) has no dependence on the use of EJB. To replace this EJB reference with a POJO or a mock object or other test stub, we could change the myComponent bean definition without changing a line of Java code. Additionally, we have not had to write a single line of JNDI lookup or other EJB plumbing code as part of our application.
+
+Benchmarks and experience in real applications indicate that the performance overhead of this approach (which involves reflective invocation of the target EJB) is minimal and is undetectable in typical use. Remember that we do not want to make fine-grained calls to EJBs anyway, as there is a cost associated with the EJB infrastructure in the application server.
+
+There is one caveat with regards to the JNDI lookup. In a bean container, this class is normally best used as a singleton (there is no reason to make it a prototype). However, if that bean container pre-instantiates singletons (as do the various XML ApplicationContext variants), you can have a problem if the bean container is loaded before the EJB container loads the target EJB. That is because the JNDI lookup is performed in the init() method of this class and then cached, but the EJB has not been bound at the target location yet. The solution is to not pre-instantiate this factory object but to let it be created on first use. In the XML containers, you can control this by using the lazy-init attribute.
+
+Although not of interest to the majority of Spring users, those doing programmatic AOP work with EJBs may want to look at LocalSlsbInvokerInterceptor.
+
+3.1.3. Accessing Remote SLSBs
+Accessing remote EJBs is essentially identical to accessing local EJBs, except that the SimpleRemoteStatelessSessionProxyFactoryBean or <jee:remote-slsb> configuration element is used. Of course, with or without Spring, remote invocation semantics apply: A call to a method on an object in another VM in another computer does sometimes have to be treated differently in terms of usage scenarios and failure handling.
+
+Spring’s EJB client support adds one more advantage over the non-Spring approach. Normally, it is problematic for EJB client code to be easily switched back and forth between calling EJBs locally or remotely. This is because the remote interface methods must declare that they throw RemoteException, and client code must deal with this, while the local interface methods need not. Client code written for local EJBs that needs to be moved to remote EJBs typically has to be modified to add handling for the remote exceptions, and client code written for remote EJBs that needs to be moved to local EJBs can either stay the same but do a lot of unnecessary handling of remote exceptions or be modified to remove that code. With the Spring remote EJB proxy, you can instead not declare any thrown RemoteException in your Business Method Interface and implementing EJB code, have a remote interface that is identical (except that it does throw RemoteException), and rely on the proxy to dynamically treat the two interfaces as if they were the same. That is, client code does not have to deal with the checked RemoteException class. Any actual RemoteException that is thrown during the EJB invocation is re-thrown as the non-checked RemoteAccessException class, which is a subclass of RuntimeException. You can then switch the target service at will between a local EJB or remote EJB (or even plain Java object) implementation, without the client code knowing or caring. Of course, this is optional: Nothing stops you from declaring RemoteException in your business interface.
+
+3.1.4. Accessing EJB 2.x SLSBs Versus EJB 3 SLSBs
+Accessing EJB 2.x Session Beans and EJB 3 Session Beans through Spring is largely transparent. Spring’s EJB accessors, including the <jee:local-slsb> and <jee:remote-slsb> facilities, transparently adapt to the actual component at runtime. They handle a home interface if found (EJB 2.x style) or perform straight component invocations if no home interface is available (EJB 3 style).
+
+Note: For EJB 3 Session Beans, you can effectively use a JndiObjectFactoryBean / <jee:jndi-lookup> as well, since fully usable component references are exposed for plain JNDI lookups there. Defining explicit <jee:local-slsb> or <jee:remote-slsb> lookups provides consistent and more explicit EJB access configuration.
+
+4. JMS (Java Message Service)
+Spring provides a JMS integration framework that simplifies the use of the JMS API in much the same way as Spring’s integration does for the JDBC API.
+
+JMS can be roughly divided into two areas of functionality, namely the production and consumption of messages. The JmsTemplate class is used for message production and synchronous message reception. For asynchronous reception similar to Java EE’s message-driven bean style, Spring provides a number of message-listener containers that you can use to create Message-Driven POJOs (MDPs). Spring also provides a declarative way to create message listeners.
+
+The org.springframework.jms.core package provides the core functionality for using JMS. It contains JMS template classes that simplify the use of the JMS by handling the creation and release of resources, much like the JdbcTemplate does for JDBC. The design principle common to Spring template classes is to provide helper methods to perform common operations and, for more sophisticated usage, delegate the essence of the processing task to user-implemented callback interfaces. The JMS template follows the same design. The classes offer various convenience methods for sending messages, consuming messages synchronously, and exposing the JMS session and message producer to the user.
+
+The org.springframework.jms.support package provides JMSException translation functionality. The translation converts the checked JMSException hierarchy to a mirrored hierarchy of unchecked exceptions. If any provider-specific subclasses of the checked javax.jms.JMSException exist, this exception is wrapped in the unchecked UncategorizedJmsException.
+
+The org.springframework.jms.support.converter package provides a MessageConverter abstraction to convert between Java objects and JMS messages.
+
+The org.springframework.jms.support.destination package provides various strategies for managing JMS destinations, such as providing a service locator for destinations stored in JNDI.
+
+The org.springframework.jms.annotation package provides the necessary infrastructure to support annotation-driven listener endpoints by using @JmsListener.
+
+The org.springframework.jms.config package provides the parser implementation for the jms namespace as well as the java config support to configure listener containers and create listener endpoints.
+
+Finally, the org.springframework.jms.connection package provides an implementation of the ConnectionFactory suitable for use in standalone applications. It also contains an implementation of Spring’s PlatformTransactionManager for JMS (the cunningly named JmsTransactionManager). This allows for seamless integration of JMS as a transactional resource into Spring’s transaction management mechanisms.
+
+As of Spring Framework 5, Spring’s JMS package fully supports JMS 2.0 and requires the JMS 2.0 API to be present at runtime. We recommend the use of a JMS 2.0 compatible provider.
+
+If you happen to use an older message broker in your system, you may try upgrading to a JMS 2.0 compatible driver for your existing broker generation. Alternatively, you may also try to run against a JMS 1.1 based driver, simply putting the JMS 2.0 API jar on the classpath but only using JMS 1.1 compatible API against your driver. Spring’s JMS support adheres to JMS 1.1 conventions by default, so with corresponding configuration it does support such a scenario. However, please consider this for transition scenarios only.
+
+4.1. Using Spring JMS
+This section describes how to use Spring’s JMS components.
+
+4.1.1. Using JmsTemplate
+The JmsTemplate class is the central class in the JMS core package. It simplifies the use of JMS, since it handles the creation and release of resources when sending or synchronously receiving messages.
+
+Code that uses the JmsTemplate needs only to implement callback interfaces that give them a clearly defined high-level contract. The MessageCreator callback interface creates a message when given a Session provided by the calling code in JmsTemplate. To allow for more complex usage of the JMS API, SessionCallback provides the JMS session, and ProducerCallback exposes a Session and MessageProducer pair.
+
+The JMS API exposes two types of send methods, one that takes delivery mode, priority, and time-to-live as Quality of Service (QOS) parameters and one that takes no QOS parameters and uses default values. Since JmsTemplate has many send methods, setting the QOS parameters have been exposed as bean properties to avoid duplication in the number of send methods. Similarly, the timeout value for synchronous receive calls is set by using the setReceiveTimeout property.
+
+Some JMS providers allow the setting of default QOS values administratively through the configuration of the ConnectionFactory. This has the effect that a call to a MessageProducer instance’s send method (send(Destination destination, Message message)) uses different QOS default values than those specified in the JMS specification. In order to provide consistent management of QOS values, the JmsTemplate must, therefore, be specifically enabled to use its own QOS values by setting the boolean property isExplicitQosEnabled to true.
+
+For convenience, JmsTemplate also exposes a basic request-reply operation that allows for sending a message and waiting for a reply on a temporary queue that is created as part of the operation.
+
+Instances of the JmsTemplate class are thread-safe, once configured. This is important, because it means that you can configure a single instance of a JmsTemplate and then safely inject this shared reference into multiple collaborators. To be clear, the JmsTemplate is stateful, in that it maintains a reference to a ConnectionFactory, but this state is not conversational state.
+As of Spring Framework 4.1, JmsMessagingTemplate is built on top of JmsTemplate and provides an integration with the messaging abstraction — that is, org.springframework.messaging.Message. This lets you create the message to send in a generic manner.
+
+4.1.2. Connections
+The JmsTemplate requires a reference to a ConnectionFactory. The ConnectionFactory is part of the JMS specification and serves as the entry point for working with JMS. It is used by the client application as a factory to create connections with the JMS provider and encapsulates various configuration parameters, many of which are vendor-specific, such as SSL configuration options.
+
+When using JMS inside an EJB, the vendor provides implementations of the JMS interfaces so that they can participate in declarative transaction management and perform pooling of connections and sessions. In order to use this implementation, Java EE containers typically require that you declare a JMS connection factory as a resource-ref inside the EJB or servlet deployment descriptors. To ensure the use of these features with the JmsTemplate inside an EJB, the client application should ensure that it references the managed implementation of the ConnectionFactory.
+
+Caching Messaging Resources
+The standard API involves creating many intermediate objects. To send a message, the following 'API' walk is performed:
+
+ConnectionFactory->Connection->Session->MessageProducer->send
+Between the ConnectionFactory and the Send operation, three intermediate objects are created and destroyed. To optimize the resource usage and increase performance, Spring provides two implementations of ConnectionFactory.
+
+Using SingleConnectionFactory
+Spring provides an implementation of the ConnectionFactory interface, SingleConnectionFactory, that returns the same Connection on all createConnection() calls and ignores calls to close(). This is useful for testing and standalone environments so that the same connection can be used for multiple JmsTemplate calls that may span any number of transactions. SingleConnectionFactory takes a reference to a standard ConnectionFactory that would typically come from JNDI.
+
+Using CachingConnectionFactory
+The CachingConnectionFactory extends the functionality of SingleConnectionFactory and adds the caching of Session, MessageProducer, and MessageConsumer instances. The initial cache size is set to 1. You can use the sessionCacheSize property to increase the number of cached sessions. Note that the number of actual cached sessions is more than that number, as sessions are cached based on their acknowledgment mode, so there can be up to four cached session instances (one for each acknowledgment mode) when sessionCacheSize is set to one . MessageProducer and MessageConsumer instances are cached within their owning session and also take into account the unique properties of the producers and consumers when caching. MessageProducers are cached based on their destination. MessageConsumers are cached based on a key composed of the destination, selector, noLocal delivery flag, and the durable subscription name (if creating durable consumers).
+
+4.1.3. Destination Management
+Destinations, as ConnectionFactory instances, are JMS administered objects that you can store and retrieved in JNDI. When configuring a Spring application context, you can use the JNDI JndiObjectFactoryBean factory class or <jee:jndi-lookup> to perform dependency injection on your object’s references to JMS destinations. However, this strategy is often cumbersome if there are a large number of destinations in the application or if there are advanced destination management features unique to the JMS provider. Examples of such advanced destination management include the creation of dynamic destinations or support for a hierarchical namespace of destinations. The JmsTemplate delegates the resolution of a destination name to a JMS destination object that implements the DestinationResolver interface. DynamicDestinationResolver is the default implementation used by JmsTemplate and accommodates resolving dynamic destinations. A JndiDestinationResolver is also provided to act as a service locator for destinations contained in JNDI and optionally falls back to the behavior contained in DynamicDestinationResolver.
+
+Quite often, the destinations used in a JMS application are only known at runtime and, therefore, cannot be administratively created when the application is deployed. This is often because there is shared application logic between interacting system components that create destinations at runtime according to a well-known naming convention. Even though the creation of dynamic destinations is not part of the JMS specification, most vendors have provided this functionality. Dynamic destinations are created with a user-defined name, which differentiates them from temporary destinations, and are often not registered in JNDI. The API used to create dynamic destinations varies from provider to provider since the properties associated with the destination are vendor-specific. However, a simple implementation choice that is sometimes made by vendors is to disregard the warnings in the JMS specification and to use the method TopicSession createTopic(String topicName) or the QueueSession createQueue(String queueName) method to create a new destination with default destination properties. Depending on the vendor implementation, DynamicDestinationResolver can then also create a physical destination instead of only resolving one.
+
+The boolean property pubSubDomain is used to configure the JmsTemplate with knowledge of what JMS domain is being used. By default, the value of this property is false, indicating that the point-to-point domain, Queues, is to be used. This property (used by JmsTemplate) determines the behavior of dynamic destination resolution through implementations of the DestinationResolver interface.
+
+You can also configure the JmsTemplate with a default destination through the property defaultDestination. The default destination is with send and receive operations that do not refer to a specific destination.
+
+4.1.4. Message Listener Containers
+One of the most common uses of JMS messages in the EJB world is to drive message-driven beans (MDBs). Spring offers a solution to create message-driven POJOs (MDPs) in a way that does not tie a user to an EJB container. (See Asynchronous reception: Message-Driven POJOs for detailed coverage of Spring’s MDP support.) Since Spring Framework 4.1, endpoint methods can be annotated with @JmsListener — see Annotation-driven Listener Endpoints for more details.
+
+A message listener container is used to receive messages from a JMS message queue and drive the MessageListener that is injected into it. The listener container is responsible for all threading of message reception and dispatches into the listener for processing. A message listener container is the intermediary between an MDP and a messaging provider and takes care of registering to receive messages, participating in transactions, resource acquisition and release, exception conversion, and so on. This lets you write the (possibly complex) business logic associated with receiving a message (and possibly respond to it), and delegates boilerplate JMS infrastructure concerns to the framework.
+
+There are two standard JMS message listener containers packaged with Spring, each with its specialized feature set.
+
+SimpleMessageListenerContainer
+
+DefaultMessageListenerContainer
+
+Using SimpleMessageListenerContainer
+This message listener container is the simpler of the two standard flavors. It creates a fixed number of JMS sessions and consumers at startup, registers the listener by using the standard JMS MessageConsumer.setMessageListener() method, and leaves it up the JMS provider to perform listener callbacks. This variant does not allow for dynamic adaption to runtime demands or for participation in externally managed transactions. Compatibility-wise, it stays very close to the spirit of the standalone JMS specification, but is generally not compatible with Java EE’s JMS restrictions.
+
+While SimpleMessageListenerContainer does not allow for participation in externally managed transactions, it does support native JMS transactions. To enable this feature, you can switch the sessionTransacted flag to true or, in the XML namespace, set the acknowledge attribute to transacted. Exceptions thrown from your listener then lead to a rollback, with the message getting redelivered. Alternatively, consider using CLIENT_ACKNOWLEDGE mode, which provides redelivery in case of an exception as well but does not use transacted Session instances and, therefore, does not include any other Session operations (such as sending response messages) in the transaction protocol.
+The default AUTO_ACKNOWLEDGE mode does not provide proper reliability guarantees. Messages can get lost when listener execution fails (since the provider automatically acknowledges each message after listener invocation, with no exceptions to be propagated to the provider) or when the listener container shuts down (you can configure this by setting the acceptMessagesWhileStopping flag). Make sure to use transacted sessions in case of reliability needs (for example, for reliable queue handling and durable topic subscriptions).
+Using DefaultMessageListenerContainer
+This message listener container is used in most cases. In contrast to SimpleMessageListenerContainer, this container variant allows for dynamic adaptation to runtime demands and is able to participate in externally managed transactions. Each received message is registered with an XA transaction when configured with a JtaTransactionManager. As a result, processing may take advantage of XA transaction semantics. This listener container strikes a good balance between low requirements on the JMS provider, advanced functionality (such as participation in externally managed transactions), and compatibility with Java EE environments.
+
+You can customize the cache level of the container. Note that, when no caching is enabled, a new connection and a new session is created for each message reception. Combining this with a non-durable subscription with high loads may lead to message loss. Make sure to use a proper cache level in such a case.
+
+This container also has recoverable capabilities when the broker goes down. By default, a simple BackOff implementation retries every five seconds. You can specify a custom BackOff implementation for more fine-grained recovery options. See api-spring-framework/util/backoff/ExponentialBackOff.html[ExponentialBackOff] for an example.
+
+Like its sibling (SimpleMessageListenerContainer), DefaultMessageListenerContainer supports native JMS transactions and allows for customizing the acknowledgment mode. If feasible for your scenario, This is strongly recommended over externally managed transactions — that is, if you can live with occasional duplicate messages in case of the JVM dying. Custom duplicate message detection steps in your business logic can cover such situations — for example, in the form of a business entity existence check or a protocol table check. Any such arrangements are significantly more efficient than the alternative: wrapping your entire processing with an XA transaction (through configuring your DefaultMessageListenerContainer with an JtaTransactionManager) to cover the reception of the JMS message as well as the execution of the business logic in your message listener (including database operations etc).
+The default AUTO_ACKNOWLEDGE mode does not provide proper reliability guarantees. Messages can get lost when listener execution fails (since the provider automatically acknowledges each message after listener invocation, with no exceptions to be propagated to the provider) or when the listener container shuts down (you can configure this by setting the acceptMessagesWhileStopping flag). Make sure to use transacted sessions in case of reliability needs (for example, for reliable queue handling and durable topic subscriptions).
+4.1.5. Transaction Management
+Spring provides a JmsTransactionManager that manages transactions for a single JMS ConnectionFactory. This lets JMS applications leverage the managed-transaction features of Spring, as described in Transaction Management section of the Data Access chapter. The JmsTransactionManager performs local resource transactions, binding a JMS Connection/Session pair from the specified ConnectionFactory to the thread. JmsTemplate automatically detects such transactional resources and operates on them accordingly.
+
+In a Java EE environment, the ConnectionFactory pools Connection and Session instances, so those resources are efficiently reused across transactions. In a standalone environment, using Spring’s SingleConnectionFactory result in a shared JMS Connection, with each transaction having its own independent Session. Alternatively, consider the use of a provider-specific pooling adapter, such as ActiveMQ’s PooledConnectionFactory class.
+
+You can also use JmsTemplate with the JtaTransactionManager and an XA-capable JMS ConnectionFactory to perform distributed transactions. Note that this requires the use of a JTA transaction manager as well as a properly XA-configured ConnectionFactory. (Check your Java EE server’s or JMS provider’s documentation.)
+
+Reusing code across a managed and unmanaged transactional environment can be confusing when using the JMS API to create a Session from a Connection. This is because the JMS API has only one factory method to create a Session, and it requires values for the transaction and acknowledgment modes. In a managed environment, setting these values is the responsibility of the environment’s transactional infrastructure, so these values are ignored by the vendor’s wrapper to the JMS Connection. When you use the JmsTemplate in an unmanaged environment, you can specify these values through the use of the properties sessionTransacted and sessionAcknowledgeMode. When you use a PlatformTransactionManager with JmsTemplate, the template is always given a transactional JMS Session.
+
+4.2. Sending a Message
+The JmsTemplate contains many convenience methods to send a message. Send methods specify the destination by using a javax.jms.Destination object, and others specify the destination by using a String in a JNDI lookup. The send method that takes no destination argument uses the default destination.
+
+The following example uses the MessageCreator callback to create a text message from the supplied Session object:
+
+import javax.jms.ConnectionFactory;
+import javax.jms.JMSException;
+import javax.jms.Message;
+import javax.jms.Queue;
+import javax.jms.Session;
+
+import org.springframework.jms.core.MessageCreator;
+import org.springframework.jms.core.JmsTemplate;
+
+public class JmsQueueSender {
+
+    private JmsTemplate jmsTemplate;
+    private Queue queue;
+    
+    public void setConnectionFactory(ConnectionFactory cf) {
+        this.jmsTemplate = new JmsTemplate(cf);
+    }
+    
+    public void setQueue(Queue queue) {
+        this.queue = queue;
+    }
+    
+    public void simpleSend() {
+        this.jmsTemplate.send(this.queue, new MessageCreator() {
+            public Message createMessage(Session session) throws JMSException {
+                return session.createTextMessage("hello queue world");
+            }
+        });
+    }
+}
+In the preceding example, the JmsTemplate is constructed by passing a reference to a ConnectionFactory. As an alternative, a zero-argument constructor and connectionFactory is provided and can be used for constructing the instance in JavaBean style (using a BeanFactory or plain Java code). Alternatively, consider deriving from Spring’s JmsGatewaySupport convenience base class, which provides pre-built bean properties for JMS configuration.
+
+The send(String destinationName, MessageCreator creator) method lets you send a message by using the string name of the destination. If these names are registered in JNDI, you should set the destinationResolver property of the template to an instance of JndiDestinationResolver.
+
+If you created the JmsTemplate and specified a default destination, the send(MessageCreator c) sends a message to that destination.
+
+4.2.1. Using Message Converters
+To facilitate the sending of domain model objects, the JmsTemplate has various send methods that take a Java object as an argument for a message’s data content. The overloaded methods convertAndSend() and receiveAndConvert() methods in JmsTemplate delegate the conversion process to an instance of the MessageConverter interface. This interface defines a simple contract to convert between Java objects and JMS messages. The default implementation (SimpleMessageConverter) supports conversion between String and TextMessage, byte[] and BytesMesssage, and java.util.Map and MapMessage. By using the converter, you and your application code can focus on the business object that is being sent or received through JMS and not be concerned with the details of how it is represented as a JMS message.
+
+沙盒当前包含一个MapMessageConverter，使用反射在JavaBean和一个之间进行转换MapMessage。您可能自己实现的其他流行实现选择是使用现有XML编组程序包（例如JAXB或XStream）创建TextMessage表示对象的的转换器。
+
+为了适应消息属性，标头和正文的设置，这些设置通常不能封装在转换器类中，因此，MessagePostProcessor接口可以在消息转换后但发送之前访问消息。以下示例显示将ajava.util.Map转换为消息后如何修改消息头和属性 ：
+
+public void sendWithConversion() {
+    Map map = new HashMap();
+    map.put("Name", "Mark");
+    map.put("Age", new Integer(47));
+    jmsTemplate.convertAndSend("testQueue", map, new MessagePostProcessor() {
+        public Message postProcessMessage(Message message) throws JMSException {
+            message.setIntProperty("AccountID", 1234);
+            message.setJMSCorrelationID("123-00001");
+            return message;
+        }
+    });
+}
+这将导致以下形式的消息：
+
+MapMessage = {
+    标头= {
+        ...标头...
+        CorrelationID = {123-00001}
+    }
+    属性= {
+        AccountID = {整数：1234}
+    }
+    字段= {
+        名称= {String：Mark}
+        年龄= {整数：47}
+    }
+}
+4.2.2。使用SessionCallback和ProducerCallback
+尽管发送操作涵盖了许多常见的使用场景，但是您有时可能希望在JMSSession或上执行多个操作MessageProducer。的 SessionCallback和ProducerCallback暴露的JMSSession和Session/ MessageProducer分别对，。这些execute()方法将JmsTemplate运行这些回调方法。
+
+4.3。接收讯息
+这描述了如何在Spring中使用JMS接收消息。
+
+4.3.1。同步接收
+虽然JMS通常与异步处理相关联，但是您可以同步使用消息。重载的receive(..)方法提供了此功能。在同步接收期间，调用线程将阻塞，直到消息可用为止。这可能是危险的操作，因为调用线程可能会无限期地被阻塞。该receiveTimeout属性指定接收者在放弃等待消息之前应该等待多长时间。
+
+4.3.2。异步接收：消息驱动的POJO
+Spring还通过使用@JmsListener 注释支持带注释的侦听器端点，并提供了开放的基础结构以编程方式注册端点。到目前为止，这是设置异步接收器的最便捷方法。有关更多详细信息，请参见启用侦听器端点注释。
+消息驱动POJO（MDP）以类似于EJB世界中的消息驱动Bean（MDB）的方式充当JMS消息的接收者。MDP上的一个限制（但请参见 使用MessageListenerAdapter）是它必须实现javax.jms.MessageListener接口。注意，如果您的POJO在多个线程上接收消息，那么确保您的实现是线程安全的，这一点很重要。
+
+以下示例显示了MDP的简单实现：
+
+import javax.jms.JMSException;
+import javax.jms.Message;
+import javax.jms.MessageListener;
+import javax.jms.TextMessage;
+
+public class ExampleListener implements MessageListener {
+
+    public void onMessage(Message message) {
+        if (message instanceof TextMessage) {
+            try {
+                System.out.println(((TextMessage) message).getText());
+            }
+            catch (JMSException ex) {
+                throw new RuntimeException(ex);
+            }
+        }
+        else {
+            throw new IllegalArgumentException("Message must be of type TextMessage");
+        }
+    }
+}
+一旦实现了MessageListener，就可以创建一个消息侦听器容器了。
+
+以下示例显示了如何定义和配置Spring附带的消息侦听器容器（在本例中为DefaultMessageListenerContainer）：
+
+<!-- this is the Message Driven POJO (MDP) -->
+<bean id="messageListener" class="jmsexample.ExampleListener"/>
+
+<!-- and this is the message listener container -->
+<bean id="jmsContainer" class="org.springframework.jms.listener.DefaultMessageListenerContainer">
+    <property name="connectionFactory" ref="connectionFactory"/>
+    <property name="destination" ref="destination"/>
+    <property name="messageListener" ref="messageListener"/>
+</bean>
+See the Spring javadoc of the various message listener containers (all of which implement MessageListenerContainer) for a full description of the features supported by each implementation.
+
+4.3.3. Using the SessionAwareMessageListener Interface
+The SessionAwareMessageListener interface is a Spring-specific interface that provides a similar contract to the JMS MessageListener interface but also gives the message-handling method access to the JMS Session from which the Message was received. The following listing shows the definition of the SessionAwareMessageListener interface:
+
+package org.springframework.jms.listener;
+
+public interface SessionAwareMessageListener {
+
+    void onMessage(Message message, Session session) throws JMSException;
+}
+You can choose to have your MDPs implement this interface (in preference to the standard JMS MessageListener interface) if you want your MDPs to be able to respond to any received messages (by using the Session supplied in the onMessage(Message, Session) method). All of the message listener container implementations that ship with Spring have support for MDPs that implement either the MessageListener or SessionAwareMessageListener interface. Classes that implement the SessionAwareMessageListener come with the caveat that they are then tied to Spring through the interface. The choice of whether or not to use it is left entirely up to you as an application developer or architect.
+
+Note that the onMessage(..) method of the SessionAwareMessageListener interface throws JMSException. In contrast to the standard JMS MessageListener interface, when using the SessionAwareMessageListener interface, it is the responsibility of the client code to handle any thrown exceptions.
+
+4.3.4. Using MessageListenerAdapter
+The MessageListenerAdapter class is the final component in Spring’s asynchronous messaging support. In a nutshell, it lets you expose almost any class as an MDP (though there are some constraints).
+
+Consider the following interface definition:
+
+public interface MessageDelegate {
+
+    void handleMessage(String message);
+    
+    void handleMessage(Map message);
+    
+    void handleMessage(byte[] message);
+    
+    void handleMessage(Serializable message);
+}
+Notice that, although the interface extends neither the MessageListener nor the SessionAwareMessageListener interface, you can still use it as an MDP by using the MessageListenerAdapter class. Notice also how the various message handling methods are strongly typed according to the contents of the various Message types that they can receive and handle.
+
+现在考虑MessageDelegate接口的以下实现：
+
+public class DefaultMessageDelegate implements MessageDelegate {
+    // implementation elided for clarity...
+}
+特别要注意，MessageDelegate接口（ DefaultMessageDelegate该类）的先前实现是如何完全没有JMS依赖性的。这确实是一个POJO，我们可以通过以下配置将其制作为MDP：
+
+<!-- this is the Message Driven POJO (MDP) -->
+<bean id="messageListener" class="org.springframework.jms.listener.adapter.MessageListenerAdapter">
+    <constructor-arg>
+        <bean class="jmsexample.DefaultMessageDelegate"/>
+    </constructor-arg>
+</bean>
+
+<!-- and this is the message listener container... -->
+<bean id="jmsContainer" class="org.springframework.jms.listener.DefaultMessageListenerContainer">
+    <property name="connectionFactory" ref="connectionFactory"/>
+    <property name="destination" ref="destination"/>
+    <property name="messageListener" ref="messageListener"/>
+</bean>
+下一个示例显示另一个MDP，它只能处理接收到的JMS TextMessage消息。请注意，实际上是如何调用消息处理方法的receive（消息处理方法 的名称MessageListenerAdapter 默认为handleMessage），但是它是可配置的（如本节后面所述）。还请注意，如何对receive(..)方法进行强类型设置以仅接收和响应JMS TextMessage消息。以下清单显示了TextMessageDelegate接口的定义：
+
+public interface TextMessageDelegate {
+
+    void receive(TextMessage message);
+}
+以下清单显示了实现该TextMessageDelegate接口的类：
+
+public class DefaultTextMessageDelegate implements TextMessageDelegate {
+    // implementation elided for clarity...
+}
+话务员的配置MessageListenerAdapter如下：
+
+<bean id="messageListener" class="org.springframework.jms.listener.adapter.MessageListenerAdapter">
+    <constructor-arg>
+        <bean class="jmsexample.DefaultTextMessageDelegate"/>
+    </constructor-arg>
+    <property name="defaultListenerMethod" value="receive"/>
+    <!-- we don't want automatic message context extraction -->
+    <property name="messageConverter">
+        <null/>
+    </property>
+</bean>
+需要注意的是，如果messageListener接收到一个JMSMessage以外的类型的TextMessage，一个IllegalStateException被抛出（随后吞咽）。MessageListenerAdapter该类的另一个功能是，Message如果处理程序方法返回非空值，则能够自动发送回响应。考虑以下接口和类：
+
+public interface ResponsiveTextMessageDelegate {
+
+    // notice the return type...
+    String receive(TextMessage message);
+}
+public class DefaultResponsiveTextMessageDelegate implements ResponsiveTextMessageDelegate {
+    // implementation elided for clarity...
+}
+If you use the DefaultResponsiveTextMessageDelegate in conjunction with a MessageListenerAdapter, any non-null value that is returned from the execution of the 'receive(..)' method is (in the default configuration) converted into a TextMessage. The resulting TextMessage is then sent to the Destination (if one exists) defined in the JMS Reply-To property of the original Message or the default Destination set on the MessageListenerAdapter (if one has been configured). If no Destination is found, an InvalidDestinationException is thrown (note that this exception is not swallowed and propagates up the call stack).
+
+4.3.5. Processing Messages Within Transactions
+Invoking a message listener within a transaction requires only reconfiguration of the listener container.
+
+You can activate local resource transactions through the sessionTransacted flag on the listener container definition. Each message listener invocation then operates within an active JMS transaction, with message reception rolled back in case of listener execution failure. Sending a response message (through SessionAwareMessageListener) is part of the same local transaction, but any other resource operations (such as database access) operate independently. This usually requires duplicate message detection in the listener implementation, to cover the case where database processing has committed but message processing failed to commit.
+
+Consider the following bean definition:
+
+<bean id="jmsContainer" class="org.springframework.jms.listener.DefaultMessageListenerContainer">
+    <property name="connectionFactory" ref="connectionFactory"/>
+    <property name="destination" ref="destination"/>
+    <property name="messageListener" ref="messageListener"/>
+    <property name="sessionTransacted" value="true"/>
+</bean>
+要参与外部管理的事务，您需要配置一个事务管理器并使用支持外部管理的事务的侦听器容器（通常为DefaultMessageListenerContainer）。
+
+要为XA事务参与配置消息侦听器容器，您需要配置一个JtaTransactionManager（默认情况下，它委托给Java EE服务器的事务子系统）。请注意，底层的JMSConnectionFactory需要具有XA功能，并已向您的JTA事务协调器正确注册。（检查Java EE服务器的JNDI资源配置。）这使消息接收以及（例如）数据库访问成为同一事务的一部分（具有统一的提交语义，但以XA事务日志开销为代价）。
+
+以下bean定义创建一个事务管理器：
+
+<bean id="transactionManager" class="org.springframework.transaction.jta.JtaTransactionManager"/>
+然后，我们需要将其添加到我们之前的容器配置中。容器负责其余的工作。以下示例显示了如何执行此操作：
+
+<bean id="jmsContainer" class="org.springframework.jms.listener.DefaultMessageListenerContainer">
+    <property name="connectionFactory" ref="connectionFactory"/>
+    <property name="destination" ref="destination"/>
+    <property name="messageListener" ref="messageListener"/>
+    <property name="transactionManager" ref="transactionManager"/> 
+</bean>
+我们的交易经理。
+4.4。支持JCA消息端点
+从2.5版开始，Spring还提供了对基于JCA的 MessageListener容器的支持。在JmsMessageEndpointManager尝试自动确定ActivationSpec从提供的类名 ResourceAdapter类名。因此，通常可以提供Spring的generic JmsActivationSpecConfig，如以下示例所示：
+
+<bean class="org.springframework.jms.listener.endpoint.JmsMessageEndpointManager">
+    <property name="resourceAdapter" ref="resourceAdapter"/>
+    <property name="activationSpecConfig">
+        <bean class="org.springframework.jms.listener.endpoint.JmsActivationSpecConfig">
+            <property name="destinationName" value="myQueue"/>
+        </bean>
+    </property>
+    <property name="messageListener" ref="myMessageListener"/>
+</bean>
+或者，您可以JmsMessageEndpointManager使用给定的 ActivationSpec对象设置一个。该ActivationSpec对象也可能来自JNDI查找（使用<jee:jndi-lookup>）。以下示例显示了如何执行此操作：
+
+<bean class="org.springframework.jms.listener.endpoint.JmsMessageEndpointManager">
+    <property name="resourceAdapter" ref="resourceAdapter"/>
+    <property name="activationSpec">
+        <bean class="org.apache.activemq.ra.ActiveMQActivationSpec">
+            <property name="destination" value="myQueue"/>
+            <property name="destinationType" value="javax.jms.Queue"/>
+        </bean>
+    </property>
+    <property name="messageListener" ref="myMessageListener"/>
+</bean>
+使用Spring的ResourceAdapterFactoryBean，您可以在ResourceAdapter 本地配置目标，如以下示例所示：
+
+<bean id="resourceAdapter" class="org.springframework.jca.support.ResourceAdapterFactoryBean">
+    <property name="resourceAdapter">
+        <bean class="org.apache.activemq.ra.ActiveMQResourceAdapter">
+            <property name="serverUrl" value="tcp://localhost:61616"/>
+        </bean>
+    </property>
+    <property name="workManager">
+        <bean class="org.springframework.jca.work.SimpleTaskWorkManager"/>
+    </property>
+</bean>
+指定的对象WorkManager也可以指向特定于环境的线程池-通常通过SimpleTaskWorkManager实例的asyncTaskExecutor属性。ResourceAdapter如果碰巧使用多个适配器，请考虑为所有实例定义一个共享线程池。
+
+在某些环境（例如WebLogic 9或更高版本）中，您可以改为ResourceAdapter使用JNDI获取整个对象<jee:jndi-lookup>。然后，基于Spring的消息侦听器可以与服务器托管的服务器交互，该服务器ResourceAdapter也使用服务器的内置服务器WorkManager。
+
+有关，和 的更多信息JmsMessageEndpointManager， 请参见javadoc 。JmsActivationSpecConfigResourceAdapterFactoryBean
+
+Spring还提供了一个不受JMS约束的通用JCA消息端点管理器 org.springframework.jca.endpoint.GenericMessageEndpointManager。该组件允许使用任何消息侦听器类型（例如JMS MessageListener）和任何提供程序特定的ActivationSpec对象。请参阅JCA提供程序的文档以了解连接器的实际功能，并请参阅 GenericMessageEndpointManager javadoc以获取特定于Spring的配置详细信息。
+
+基于JCA的消息端点管理与EJB 2.1消息驱动Bean非常相似。它使用相同的基础资源提供者合同。与EJB 2.1 MDB一样，您也可以在Spring上下文中使用JCA提供程序支持的任何消息侦听器接口。尽管如此，Spring为JMS提供了显式的“便利”支持，因为JMS是JCA端点管理协定中最常用的端点API。
+4.5。注释驱动的侦听器端点
+异步接收消息的最简单方法是使用带注释的侦听器端点基础结构。简而言之，它使您可以将托管Bean的方法公开为JMS侦听器端点。以下示例显示了如何使用它：
+
+@Component
+public class MyService {
+
+    @JmsListener(destination = "myDestination")
+    public void processOrder(String data) { ... }
+}
+前面示例的思想是，只要消息可用，就会 相应地调用javax.jms.Destination myDestination该processOrder方法（在这种情况下，使用JMS消息的内容，类似于MessageListenerAdapter 提供的内容）。
+
+带注释的端点基础结构通过使用，为每种带注释的方法在幕后创建一个消息侦听器容器JmsListenerContainerFactory。这样的容器不会针对应用程序上下文进行注册，但是可以通过使用JmsListenerEndpointRegistryBean方便地定位用于管理目的。
+
+@JmsListener是Java 8上的可重复注释，因此您可以通过@JmsListener 向其添加其他声明来将多个JMS目标与同一方法相关联。
+4.5.1。启用侦听器端点注释
+要启用对@JmsListener注释的支持，可以将其添加@EnableJms到一个@Configuration类中，如以下示例所示：
+
+@Configuration
+@EnableJms
+public class AppConfig {
+
+    @Bean
+    public DefaultJmsListenerContainerFactory jmsListenerContainerFactory() {
+        DefaultJmsListenerContainerFactory factory = new DefaultJmsListenerContainerFactory();
+        factory.setConnectionFactory(connectionFactory());
+        factory.setDestinationResolver(destinationResolver());
+        factory.setSessionTransacted(true);
+        factory.setConcurrency("3-10");
+        return factory;
+    }
+}
+默认情况下，基础结构会寻找一个名为BeanjmsListenerContainerFactory 的工厂供其用来创建消息侦听器容器的源。在这种情况下（并忽略JMS基础结构设置），您可以processOrder 使用三个线程的核心轮询大小和十个线程的最大池大小来调用该方法。
+
+您可以自定义用于每个注释的侦听器容器工厂，也可以通过实现JmsListenerConfigurer接口来配置显式默认值。仅当至少一个端点在没有特定容器工厂的情况下注册时，才需要使用默认值。有关JmsListenerConfigurer 详细信息和示例，请参见实现的类的javadoc 。
+
+如果您更喜欢XML配置，那么可以使用<jms:annotation-driven> 元素，如以下示例所示：
+
+<jms:annotation-driven/>
+
+<bean id="jmsListenerContainerFactory"
+        class="org.springframework.jms.config.DefaultJmsListenerContainerFactory">
+    <property name="connectionFactory" ref="connectionFactory"/>
+    <property name="destinationResolver" ref="destinationResolver"/>
+    <property name="sessionTransacted" value="true"/>
+    <property name="concurrency" value="3-10"/>
+</bean>
+4.5.2。程序化端点注册
+JmsListenerEndpoint提供JMS端点的模型，并负责为该模型配置容器。除了JmsListener注释所检测的端点之外，基础结构还允许您以编程方式配置端点。以下示例显示了如何执行此操作：
+
+@Configuration
+@EnableJms
+public class AppConfig implements JmsListenerConfigurer {
+
+    @Override
+    public void configureJmsListeners(JmsListenerEndpointRegistrar registrar) {
+        SimpleJmsListenerEndpoint endpoint = new SimpleJmsListenerEndpoint();
+        endpoint.setId("myJmsEndpoint");
+        endpoint.setDestination("anotherQueue");
+        endpoint.setMessageListener(message -> {
+            // processing
+        });
+        registrar.registerEndpoint(endpoint);
+    }
+}
+在前面的示例中，我们使用SimpleJmsListenerEndpoint了提供实际 MessageListener调用的。但是，您也可以构建自己的端点变体来描述自定义调用机制。
+
+请注意，您可以@JmsListener完全跳过使用，而可以通过编程方式仅注册端点JmsListenerConfigurer。
+
+4.5.3。带注释的端点方法签名
+到目前为止，我们已经String在端点中注入了一个简单的方法，但实际上它可以具有非常灵活的方法签名。在以下示例中，我们将其重写为Order使用自定义标头注入：
+
+@Component
+public class MyService {
+
+    @JmsListener(destination = "myDestination")
+    public void processOrder(Order order, @Header("order_type") String orderType) {
+        ...
+    }
+}
+您可以在JMS侦听器端点中注入的主要元素如下：
+
+原始javax.jms.Message或其任何子类（前提是它与传入的消息类型匹配）。
+
+该javax.jms.Session可选访问本地JMS API（例如，用于发送一个自定义的回复）。
+
+的org.springframework.messaging.Message，它表示传入的JMS消息。请注意，此消息同时包含自定义标头和标准标头（由定义JmsHeaders）。
+
+@Header-带注释的方法参数，以提取特定的标头值，包括标准的JMS标头。
+
+一个带@Headers注释的参数，也必须可分配给该参数，以java.util.Map访问所有标头。
+
+不是支持的类型（Message或 Session）之一的非注释元素被视为有效负载。您可以通过使用注释参数来使其明确@Payload。您还可以通过添加额外的来启用验证 @Valid。
+
+注入Spring的Message抽象功能特别有用，它可以受益于存储在特定于传输的消息中的所有信息，而无需依赖于特定于传​​输的API。以下示例显示了如何执行此操作：
+
+@JmsListener(destination = "myDestination")
+public void processOrder(Message<Order> order) { ... }
+方法参数的处理由提供DefaultMessageHandlerMethodFactory，您可以进一步自定义以支持其他方法参数。您也可以在那里自定义转换和验证支持。
+
+例如，如果要Order在处理之前确保我们的有效，则可以使用注释有效负载@Valid并配置必要的验证器，如以下示例所示：
+
+@Configuration
+@EnableJms
+public class AppConfig implements JmsListenerConfigurer {
+
+    @Override
+    public void configureJmsListeners(JmsListenerEndpointRegistrar registrar) {
+        registrar.setMessageHandlerMethodFactory(myJmsHandlerMethodFactory());
+    }
+    
+    @Bean
+    public DefaultMessageHandlerMethodFactory myHandlerMethodFactory() {
+        DefaultMessageHandlerMethodFactory factory = new DefaultMessageHandlerMethodFactory();
+        factory.setValidator(myValidator());
+        return factory;
+    }
+}
+4.5.4。反应管理
+现有的支持MessageListenerAdapter 已经使您的方法具有非void返回类型。在这种情况下，调用的结果将封装在中javax.jms.Message，发送JMSReplyTo到原始消息的标头中指定的目标位置或侦听器上配置的默认目标位置。现在，您可以使用@SendTo消息传递抽象的注释来设置默认目标。
+
+假设我们的processOrder方法现在应该返回OrderStatus，我们可以将其编写为自动发送响应，如以下示例所示：
+
+@JmsListener(destination = "myDestination")
+@SendTo("status")
+public OrderStatus processOrder(Order order) {
+    // order processing
+    return status;
+}
+如果您有多个带有 注释的@JmsListener方法，则还可以将@SendTo注释放在类级别以共享默认的答复目标。
+如果需要以与传输无关的方式设置其他标头，则可以Message使用类似于以下方法的方法返回a ：
+
+@JmsListener(destination = "myDestination")
+@SendTo("status")
+public Message<OrderStatus> processOrder(Order order) {
+    // order processing
+    return MessageBuilder
+            .withPayload(status)
+            .setHeader("code", 1234)
+            .build();
+}
+如果需要在运行时计算响应目标，则可以将响应封装在一个JmsResponse实例中，该实例还提供要在运行时使用的目标。我们可以如下重写前一个示例：
+
+@JmsListener(destination = "myDestination")
+public JmsResponse<Message<OrderStatus>> processOrder(Order order) {
+    // order processing
+    Message<OrderStatus> response = MessageBuilder
+            .withPayload(status)
+            .setHeader("code", 1234)
+            .build();
+    return JmsResponse.forQueue(response, "status");
+}
+最后，如果需要为响应指定一些QoS值，例如优先级或生存时间，则可以进行相应的配置JmsListenerContainerFactory，如以下示例所示：
+
+@Configuration
+@EnableJms
+public class AppConfig {
+
+    @Bean
+    public DefaultJmsListenerContainerFactory jmsListenerContainerFactory() {
+        DefaultJmsListenerContainerFactory factory = new DefaultJmsListenerContainerFactory();
+        factory.setConnectionFactory(connectionFactory());
+        QosSettings replyQosSettings = new QosSettings();
+        replyQosSettings.setPriority(2);
+        replyQosSettings.setTimeToLive(10000);
+        factory.setReplyQosSettings(replyQosSettings);
+        return factory;
+    }
+}
+4.6。JMS命名空间支持
+Spring提供了一个XML名称空间来简化JMS配置。要使用JMS名称空间元素，您需要引用JMS模式，如以下示例所示：
+
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xmlns:jms="http://www.springframework.org/schema/jms" 
+        xsi:schemaLocation="
+            http://www.springframework.org/schema/beans https://www.springframework.org/schema/beans/spring-beans.xsd
+            http://www.springframework.org/schema/jms https://www.springframework.org/schema/jms/spring-jms.xsd">
+
+    <!-- bean definitions here -->
+
+</beans>
+引用JMS模式。
+这个命名空间由三个顶级元素：<annotation-driven/>，<listener-container/> 和<jca-listener-container/>。<annotation-driven/>启用注释驱动的侦听器终结点的使用。<listener-container/>并<jca-listener-container/> 定义共享的侦听器容器配置，并且可以包含<listener/>子元素。以下示例显示了两个侦听器的基本配置：
+
+<jms:listener-container>
+
+    <jms:listener destination="queue.orders" ref="orderService" method="placeOrder"/>
+    
+    <jms:listener destination="queue.confirmations" ref="confirmationLogger" method="log"/>
+
+</jms:listener-container>
+前面的示例等效于创建两个不同的侦听器容器bean定义和两个不同的MessageListenerAdapterbean定义，如Using中MessageListenerAdapter所示。除了前面示例中显示的属性之外，该listener元素还可以包含几个可选属性。下表描述了所有可用属性：
+
+表3. JMS <listener>元素的属性
+属性	描述
+id
+
+托管侦听器容器的Bean名称。如果未指定，将自动生成Bean名称。
+
+destination （需要）
+
+此侦听器的目标名称，通过DestinationResolver 策略解析。
+
+ref （需要）
+
+处理程序对象的bean名称。
+
+method
+
+要调用的处理程序方法的名称。如果ref属性指向MessageListener 或Spring SessionAwareMessageListener，则可以忽略此属性。
+
+response-destination
+
+向其发送响应消息的默认响应目标的名称。在请求消息不包含JMSReplyTo字段的情况下适用。此目标的类型由listener-container的 response-destination-type属性确定。请注意，这仅适用于具有返回值的侦听器方法，为此，每个结果对象都将转换为响应消息。
+
+subscription
+
+持久订阅的名称（如果有）。
+
+selector
+
+此侦听器的可选消息选择器。
+
+concurrency
+
+要启动此侦听器的并发会话或使用者的数量。此值可以是表示最大数的简单数字（例如5），也可以是表示下限和上限的范围（例如3-5）。请注意，指定的最小值仅是一个提示，在运行时可能会被忽略。默认值为容器提供的值。
+
+该<listener-container/>元素还接受几个可选属性。这允许自定义各种策略（例如taskExecutor和 destinationResolver）以及基本的JMS设置和资源引用。通过使用这些属性，您可以定义高度自定义的侦听器容器，同时仍然受益于命名空间的便利性。
+
+您可以JmsListenerContainerFactory通过指定id通过factory-id属性公开的Bean来自动将这些设置显示为，如以下示例所示：
+
+<jms:listener-container connection-factory="myConnectionFactory"
+        task-executor="myTaskExecutor"
+        destination-resolver="myDestinationResolver"
+        transaction-manager="myTransactionManager"
+        concurrency="10">
+
+    <jms:listener destination="queue.orders" ref="orderService" method="placeOrder"/>
+    
+    <jms:listener destination="queue.confirmations" ref="confirmationLogger" method="log"/>
+
+</jms:listener-container>
+下表描述了所有可用属性。有关AbstractMessageListenerContainer 各个属性的更多详细信息，请参见和其具体子类的类级javadoc 。Javadoc还讨论了事务选择和消息重新交付方案。
+
+表4. JMS <listener-container>元素的属性
+属性	描述
+container-type
+
+此侦听器容器的类型。可用选项为default，simple， default102或者simple102（默认选项default）。
+
+container-class
+
+自定义侦听器容器实现类，作为完全限定的类名称。根据属性，默认值为Spring的标准DefaultMessageListenerContainer或 。SimpleMessageListenerContainercontainer-type
+
+factory-id
+
+将此元素定义的设置公开为JmsListenerContainerFactory 带有指定的，id以便它们可以与其他端点重用。
+
+connection-factory
+
+对JMS ConnectionFactoryBean的引用（默认Bean名称为 connectionFactory）。
+
+task-executor
+
+TaskExecutor对JMS侦听器调用程序的Spring的引用。
+
+destination-resolver
+
+DestinationResolver对解决JMSDestination实例的策略的引用。
+
+message-converter
+
+MessageConverter对将JMS消息转换为侦听器方法参数的策略的参考。默认值为SimpleMessageConverter。
+
+error-handler
+
+引用一种ErrorHandler策略，用于处理在执行期间可能发生的任何未捕获的异常MessageListener。
+
+destination-type
+
+这个监听器的JMS目的地类型：queue，topic，durableTopic，sharedTopic，或sharedDurableTopic。这潜在地使pubSubDomain，subscriptionDurable 与subscriptionShared所述容器的性质。默认值为queue（禁用这三个属性）。
+
+response-destination-type
+
+响应的JMS目标类型：queue或topic。默认值为该destination-type属性的值 。
+
+client-id
+
+此侦听器容器的JMS客户端ID。使用持久订阅时必须指定它。
+
+cache
+
+对JMS资源的高速缓存级别：none，connection，session，consumer，或 auto。默认情况下（auto），consumer除非指定了外部事务管理器，否则缓存级别是有效的-在这种情况下，有效的默认值将是none（假设Java EE风格的事务管理，其中给定的ConnectionFactory是可识别XA的池）。
+
+acknowledge
+
+本机JMS确认模式：auto，client，dups-ok，或transacted。值transacted激活本地交易Session。或者，您可以指定transaction-manager属性，如表中稍后所述。默认值为auto。
+
+transaction-manager
+
+对外部PlatformTransactionManager（通常是基于XA的事务协调器，例如Spring的JtaTransactionManager）的引用。如果未指定，则使用本机确认（请参阅acknowledge属性）。
+
+concurrency
+
+每个侦听器启动的并发会话或使用者的数量。它可以是表示最大数的简单数字（例如5），也可以是表示下限和上限的范围（例如3-5）。请注意，指定的最小值只是一个提示，在运行时可能会被忽略。默认值为1。如果1主题侦听器或队列顺序很重要，则应将并发限制在一定范围内。考虑将其提高到一般队列。
+
+prefetch
+
+加载到单个会话中的最大消息数。请注意，增加此数字可能会导致并发消费者饥饿。
+
+receive-timeout
+
+用于接听电话的超时时间（以毫秒为单位）。默认值为1000（一秒钟）。-1表示没有超时。
+
+back-off
+
+指定BackOff用于计算恢复尝试间隔的实例。如果BackOffExecution实现返回BackOffExecution#STOP，则侦听器容器不会进一步尝试恢复。recovery-interval 设置此属性后，将忽略该值。缺省值为a FixedBackOff，间隔为5000毫秒（即5秒）。
+
+recovery-interval
+
+指定两次恢复尝试之间的时间间隔（以毫秒为单位）。它提供了一种方便的方法来创建FixedBackOff具有指定间隔的。有关更多恢复选项，请考虑指定一个BackOff实例。缺省值为5000毫秒（即5秒）。
+
+phase
+
+该容器应在其中启动和停止的生命周期阶段。值越低，此容器启动越早，而其停止越晚。默认值为 Integer.MAX_VALUE，表示容器尽可能晚地启动，并尽快停止。
+
+使用jms模式支持配置基于JCA的侦听器容器非常相似，如以下示例所示：
+
+<jms:jca-listener-container resource-adapter="myResourceAdapter"
+        destination-resolver="myDestinationResolver"
+        transaction-manager="myTransactionManager"
+        concurrency="10">
+
+    <jms:listener destination="queue.orders" ref="myMessageListener"/>
+
+</jms:jca-listener-container>
+下表描述了JCA变体的可用配置选项：
+
+表5. JMS <jca-listener-container />元素的属性
+属性	描述
+factory-id
+
+将此元素定义的设置公开为JmsListenerContainerFactory 带有指定的，id以便它们可以与其他端点重用。
+
+resource-adapter
+
+对JCA ResourceAdapterbean的引用（默认bean名称为 resourceAdapter）。
+
+activation-spec-factory
+
+对的引用JmsActivationSpecFactory。默认设置是自动检测JMS提供程序及其ActivationSpec类（请参阅参考资料DefaultJmsActivationSpecFactory）。
+
+destination-resolver
+
+DestinationResolver解决JMS的策略的参考Destinations。
+
+message-converter
+
+MessageConverter对将JMS消息转换为侦听器方法参数的策略的参考。默认值为SimpleMessageConverter。
+
+destination-type
+
+这个监听器的JMS目的地类型：queue，topic，durableTopic，sharedTopic。或sharedDurableTopic。这潜在地使pubSubDomain，subscriptionDurable和subscriptionShared容器的性质。默认值为queue（禁用这三个属性）。
+
+response-destination-type
+
+响应的JMS目标类型：queue或topic。默认值为该destination-type属性的值 。
+
+client-id
+
+此侦听器容器的JMS客户端ID。使用持久订阅时需要指定它。
+
+acknowledge
+
+本机JMS确认模式：auto，client，dups-ok，或transacted。值transacted激活本地交易Session。或者，您可以指定transaction-manager稍后描述的属性。默认值为auto。
+
+transaction-manager
+
+对SpringJtaTransactionManager或a的 引用，javax.transaction.TransactionManager用于为每个传入消息启动XA事务。如果未指定，则使用本机确认（请参阅 acknowledge属性）。
+
+concurrency
+
+每个侦听器启动的并发会话或使用者的数量。它可以是表示最大值的简单数字（例如5），也可以是表示上下限的范围（例如3-5）。请注意，指定的最小值只是一个提示，通常在运行时使用JCA侦听器容器时将被忽略。预设值为1。
+
+prefetch
+
+加载到单个会话中的最大消息数。请注意，增加此数字可能会导致并发消费者饥饿。
+
+5. JMX
+Spring中的JMX（Java管理扩展）支持提供了一些功能，使您可以轻松，透明地将Spring应用程序集成到JMX基础结构中。
+
+JMX？
+本章不是JMX的介绍。它没有试图解释为什么您可能要使用JMX。如果您不熟悉JMX，请参阅本章末尾的其他资源。
+
+具体来说，Spring的JMX支持提供了四个核心功能：
+
+将任何Spring bean自动注册为JMX MBean。
+
+用于控制bean的管理界面的灵活机制。
+
+通过远程JSR-160连接器以声明方式公开MBean。
+
+本地和远程MBean资源的简单代理。
+
+这些功能旨在在不将应用程序组件耦合到Spring或JMX接口和类的情况下起作用。实际上，在大多数情况下，您的应用程序类无需了解Spring或JMX即可利用Spring JMX功能。
+
+5.1。将您的Bean导出到JMX
+Spring的JMX框架的核心类是MBeanExporter。此类负责获取您的Spring bean并向JMX注册它们MBeanServer。例如，考虑以下类：
+
+package org.springframework.jmx;
+
+public class JmxTestBean implements IJmxTestBean {
+
+    private String name;
+    private int age;
+    private boolean isSuperman;
+    
+    public int getAge() {
+        return age;
+    }
+    
+    public void setAge(int age) {
+        this.age = age;
+    }
+    
+    public void setName(String name) {
+        this.name = name;
+    }
+    
+    public String getName() {
+        return name;
+    }
+    
+    public int add(int x, int y) {
+        return x + y;
+    }
+    
+    public void dontExposeMe() {
+        throw new RuntimeException();
+    }
+}
+要将此Bean的属性和方法公开为MBean的属性和操作，可以MBeanExporter在配置文件中配置该类的实例并传入Bean，如以下示例所示：
+
+<beans>
+    <!-- this bean must not be lazily initialized if the exporting is to happen -->
+    <bean id="exporter" class="org.springframework.jmx.export.MBeanExporter" lazy-init="false">
+        <property name="beans">
+            <map>
+                <entry key="bean:name=testBean1" value-ref="testBean"/>
+            </map>
+        </property>
+    </bean>
+    <bean id="testBean" class="org.springframework.jmx.JmxTestBean">
+        <property name="name" value="TEST"/>
+        <property name="age" value="100"/>
+    </bean>
+</beans>
+前面的配置片段中相关的bean定义是exporter bean。该beans属性MBeanExporter确切地告诉您必须将哪些bean导出到JMX MBeanServer。在默认配置中，中的每个条目的键beans Map都用作ObjectName相应条目值所引用的Bean。您可以更改此行为，如控制ObjectNameBean的实例中所述。
+
+使用此配置，该testBeanBean在下方显示为MBean ObjectName bean:name=testBean1。默认情况下，publicbean的所有属性都公开为属性，所有public方法（从Object类继承的方法除外 ）都公开为操作。
+
+MBeanExporter是一个Lifecyclebean（请参阅启动和关闭回调）。默认情况下，MBean在应用程序生命周期中尽可能晚地导出。您可以phase通过设置autoStartup标志来配置导出发生的位置或禁用自动注册。
+5.1.1。创建一个MBeanServer
+上一节中显示的配置假定该应用程序正在一个（并且只有一个）MBeanServer 已经运行的环境中运行。在这种情况下，Spring尝试找到正在运行的MBeanServer服务器，并将您的bean注册到该服务器（如果有）。当您的应用程序在具有自己的容器（例如Tomcat或IBM WebSphere）中运行时，此行为很有用MBeanServer。
+
+但是，这种方法在独立环境中或在未提供的容器中运行时没有用MBeanServer。为了解决这个问题，您可以MBeanServer通过将org.springframework.jmx.support.MBeanServerFactoryBean类的实例添加到配置中来声明性地创建 实例 。您还可以MBeanServer通过将MBeanExporter实例server属性的MBeanServer值设置为所返回的值 来确保使用特定对象 MBeanServerFactoryBean，如以下示例所示：
+
+<beans>
+
+    <bean id="mbeanServer" class="org.springframework.jmx.support.MBeanServerFactoryBean"/>
+    
+    <!--
+    this bean needs to be eagerly pre-instantiated in order for the exporting to occur;
+    this means that it must not be marked as lazily initialized
+    -->
+    <bean id="exporter" class="org.springframework.jmx.export.MBeanExporter">
+        <property name="beans">
+            <map>
+                <entry key="bean:name=testBean1" value-ref="testBean"/>
+            </map>
+        </property>
+        <property name="server" ref="mbeanServer"/>
+    </bean>
+    
+    <bean id="testBean" class="org.springframework.jmx.JmxTestBean">
+        <property name="name" value="TEST"/>
+        <property name="age" value="100"/>
+    </bean>
+
+</beans>
+在前面的示例中，的实例由MBeanServer创建，MBeanServerFactoryBean并MBeanExporter通过server属性提供给。提供您自己的 MBeanServer实例时，MBeanExporter不会尝试查找正在运行 MBeanServer的MBeanServer实例并使用提供的实例。为了使其正常工作，您必须在类路径上具有JMX实现。
+
+5.1.2。重用现有的MBeanServer
+如果未指定服务器，则MBeanExporter尝试自动检测正在运行 MBeanServer。在大多数仅使用一个MBeanServer实例的环境中，这是可行的。但是，当存在多个实例时，导出器可能选择了错误的服务器。在这种情况下，应使用MBeanServer agentId指示要使用的实例，如以下示例所示：
+
+<beans>
+    <bean id="mbeanServer" class="org.springframework.jmx.support.MBeanServerFactoryBean">
+        <!-- indicate to first look for a server -->
+        <property name="locateExistingServerIfPossible" value="true"/>
+        <!-- search for the MBeanServer instance with the given agentId -->
+        <property name="agentId" value="MBeanServer_instance_agentId>"/>
+    </bean>
+    <bean id="exporter" class="org.springframework.jmx.export.MBeanExporter">
+        <property name="server" ref="mbeanServer"/>
+        ...
+    </bean>
+</beans>
+对于平台或现有的MBeanServer具有agentId通过查找方法检索到的动态（或未知）动态的 情况，应使用 factory-method，如以下示例所示：
+
+<beans>
+    <bean id="exporter" class="org.springframework.jmx.export.MBeanExporter">
+        <property name="server">
+            <!-- Custom MBeanServerLocator -->
+            <bean class="platform.package.MBeanServerLocator" factory-method="locateMBeanServer"/>
+        </property>
+    </bean>
+
+    <!-- other beans here -->
+
+</beans>
+5.1.3。延迟初始化的MBean
+如果使用MBeanExporter还配置了延迟初始化的来配置Bean ，MBeanExporter则不会破坏该协定，并避免实例化该Bean。相反，它向注册了一个代理，MBeanServer并推迟从容器中获取Bean，直到对该代理进行第一次调用为止。
+
+5.1.4。自动注册MBean
+通过导出的MBeanExporter，已经是有效MBean的所有Bean都将按原样注册，MBeanServer而无需Spring的进一步干预。MBeanExporter通过将autodetect 属性设置为true，可以使MBean被自动检测，如以下示例所示：
+
+<bean id="exporter" class="org.springframework.jmx.export.MBeanExporter">
+    <property name="autodetect" value="true"/>
+</bean>
+
+<bean name="spring:mbean=true" class="org.springframework.jmx.export.TestDynamicMBean"/>
+在前面的示例中，被调用的beanspring:mbean=true已经是有效的JMX MBean，并由Spring自动注册。默认情况下，自动检测到JMX注册的bean的bean名称用作ObjectName。您可以覆盖此行为，如控制ObjectNameBean的实例中所述。
+
+5.1.5。控制注册行为
+考虑这样一个春天的情景MBeanExporter尝试注册一个MBean 与MBeanServer使用ObjectName bean:name=testBean1。如果MBean 实例已经在该实例下注册ObjectName，则默认行为是失败（并抛出InstanceAlreadyExistsException）。
+
+您可以精确控制将MBean进行注册时发生的情况MBeanServer。Spring的JMX支持允许三种不同的注册行为来控制注册行为，当注册过程发现anMBean已在相同的之下注册时ObjectName。下表总结了这些注册行为：
+
+表6.注册行为
+注册行为	说明
+FAIL_ON_EXISTING
+
+这是默认的注册行为。如果一个MBean实例已经在相同的注册ObjectName，将MBean正在注册不注册，而InstanceAlreadyExistsException被抛出。现有 MBean不受影响。
+
+IGNORE_EXISTING
+
+如果MBean已经在同一实例下注册了实例ObjectName，那么 MBean正在注册的实例不会被注册。现有MBean不受影响，并且不会Exception抛出任何异常。这在多个应用程序要共享一个共享MBean中的一个共享的设置中很有用MBeanServer。
+
+REPLACE_EXISTING
+
+如果某个MBean实例已经在同一实例下注册ObjectName，那么MBean先前已注册的现有实例将被取消注册，并且新 实例将MBean在其位置注册（新MBean实例将有效替换先前的实例）。
+
+上表中的值被定义为RegistrationPolicy该类上的枚举。如果要更改默认注册行为，则需要将定义registrationPolicy上的属性值设置 MBeanExporter为这些值之一。
+
+下面的示例显示如何从默认注册行为更改为REPLACE_EXISTING行为：
+
+<beans>
+
+    <bean id="exporter" class="org.springframework.jmx.export.MBeanExporter">
+        <property name="beans">
+            <map>
+                <entry key="bean:name=testBean1" value-ref="testBean"/>
+            </map>
+        </property>
+        <property name="registrationPolicy" value="REPLACE_EXISTING"/>
+    </bean>
+    
+    <bean id="testBean" class="org.springframework.jmx.JmxTestBean">
+        <property name="name" value="TEST"/>
+        <property name="age" value="100"/>
+    </bean>
+
+</beans>
+5.2。控制Bean的管理接口
+在上一节的示例中，您几乎没有控制bean的管理接口。public 每个导出的bean的所有属性和方法分别作为JMX属性和操作公开。为了对出口的Bean的哪些属性和方法实际上作为JMX属性和操作公开而进行更细粒度的控制，Spring JMX提供了一种全面且可扩展的机制来控制Bean的管理接口。
+
+5.2.1。使用MBeanInfoAssembler介面
+在后台，MBeanExporter代表org.springframework.jmx.export.assembler.MBeanInfoAssembler接口的实现，该 接口负责定义每个公开的bean的管理接口。默认实现 org.springframework.jmx.export.assembler.SimpleReflectiveMBeanInfoAssembler定义了一个管理接口，该接口公开了所有公共属性和方法（如前面各节中的示例所示）。Spring提供了MBeanInfoAssembler接口的两个附加实现，使您可以使用源级元数据或任何任意接口来控制生成的管理接口。
+
+5.2.2。使用源级元数据：Java注释
+通过使用MetadataMBeanInfoAssembler，您可以使用源级元数据为bean定义管理界面。org.springframework.jmx.export.metadata.JmxAttributeSource接口封装了元数据的读取。Spring JMX提供了使用Java注释的默认实现，即 org.springframework.jmx.export.annotation.AnnotationJmxAttributeSource。您必须MetadataMBeanInfoAssembler使用JmxAttributeSource接口的实现实例配置，才能使其正常运行（没有默认值）。
+
+要标记要导出到JMX的bean，应使用注释对bean类进行 ManagedResource注释。您必须使用ManagedOperation注释将要公开的每个方法标记为一个操作，并使用注释将要公开的每个属性标记为ManagedAttribute。标记属性时，可以省略getter或setter的注释，以分别创建只写或只读属性。
+
+带ManagedResource注释的Bean必须是公共的，公开操作或属性的方法也必须是公共的。
+以下示例显示了JmxTestBean我们在创建MBeanServer中使用的类的带注释版本：
+
+package org.springframework.jmx;
+
+import org.springframework.jmx.export.annotation.ManagedResource;
+import org.springframework.jmx.export.annotation.ManagedOperation;
+import org.springframework.jmx.export.annotation.ManagedAttribute;
+
+@ManagedResource(
+        objectName="bean:name=testBean4",
+        description="My Managed Bean",
+        log=true,
+        logFile="jmx.log",
+        currencyTimeLimit=15,
+        persistPolicy="OnUpdate",
+        persistPeriod=200,
+        persistLocation="foo",
+        persistName="bar")
+public class AnnotationTestBean implements IJmxTestBean {
+
+    private String name;
+    private int age;
+    
+    @ManagedAttribute(description="The Age Attribute", currencyTimeLimit=15)
+    public int getAge() {
+        return age;
+    }
+    
+    public void setAge(int age) {
+        this.age = age;
+    }
+    
+    @ManagedAttribute(description="The Name Attribute",
+            currencyTimeLimit=20,
+            defaultValue="bar",
+            persistPolicy="OnUpdate")
+    public void setName(String name) {
+        this.name = name;
+    }
+    
+    @ManagedAttribute(defaultValue="foo", persistPeriod=300)
+    public String getName() {
+        return name;
+    }
+    
+    @ManagedOperation(description="Add two numbers")
+    @ManagedOperationParameters({
+        @ManagedOperationParameter(name = "x", description = "The first number"),
+        @ManagedOperationParameter(name = "y", description = "The second number")})
+    public int add(int x, int y) {
+        return x + y;
+    }
+    
+    public void dontExposeMe() {
+        throw new RuntimeException();
+    }
+
+}
+在前面的示例中，您可以看到JmxTestBean该类标记有 ManagedResource注释，并且该ManagedResource注释配置了一组属性。这些属性可用于配置MBean生成的MBean的各个方面，MBeanExporter稍后将在Source-level Metadata Types中进行详细说明。
+
+无论是age和name属性注释与ManagedAttribute 注释，但是，在的情况下age财产，只标记了getter。这导致这两个属性都作为属性包含在管理界面中，但是该age属性是只读的。
+
+最后，该add(int, int)方法带有ManagedOperation属性标记，而dontExposeMe()方法则没有。使用时，这将导致管理界面仅包含一个操作（add(int, int)）MetadataMBeanInfoAssembler。
+
+以下配置显示了如何配置MBeanExporter来使用 MetadataMBeanInfoAssembler：
+
+<beans>
+    <bean id="exporter" class="org.springframework.jmx.export.MBeanExporter">
+        <property name="assembler" ref="assembler"/>
+        <property name="namingStrategy" ref="namingStrategy"/>
+        <property name="autodetect" value="true"/>
+    </bean>
+
+    <bean id="jmxAttributeSource"
+            class="org.springframework.jmx.export.annotation.AnnotationJmxAttributeSource"/>
+    
+    <!-- will create management interface using annotation metadata -->
+    <bean id="assembler"
+            class="org.springframework.jmx.export.assembler.MetadataMBeanInfoAssembler">
+        <property name="attributeSource" ref="jmxAttributeSource"/>
+    </bean>
+    
+    <!-- will pick up the ObjectName from the annotation -->
+    <bean id="namingStrategy"
+            class="org.springframework.jmx.export.naming.MetadataNamingStrategy">
+        <property name="attributeSource" ref="jmxAttributeSource"/>
+    </bean>
+    
+    <bean id="testBean" class="org.springframework.jmx.AnnotationTestBean">
+        <property name="name" value="TEST"/>
+        <property name="age" value="100"/>
+    </bean>
+</beans>
+在前面的示例中，MetadataMBeanInfoAssembler已经为Bean配置了AnnotationJmxAttributeSource该类的实例，并通过MBeanExporter 汇编程序属性将其传递给。这是利用Spring公开的MBean的元数据驱动的管理接口所需要的全部。
+
+5.2.3。源级元数据类型
+下表描述了可在Spring JMX中使用的源级别元数据类型：
+
+表7.源级元数据类型
+目的	注解	注释类型
+将a的所有实例标记Class为JMX托管资源。
+
+@ManagedResource
+
+类
+
+将方法标记为JMX操作。
+
+@ManagedOperation
+
+方法
+
+将一个getter或setter标记为JMX属性的一半。
+
+@ManagedAttribute
+
+方法（仅getter和setter）
+
+定义操作参数的描述。
+
+@ManagedOperationParameter 和 @ManagedOperationParameters
+
+方法
+
+下表描述了可在这些源级元数据类型上使用的配置参数：
+
+表8.源级元数据参数
+参数	描述	适用于
+ObjectName
+
+用于MetadataNamingStrategy确定ObjectName托管资源的。
+
+ManagedResource
+
+description
+
+设置资源，属性或操作的友好描述。
+
+ManagedResource，ManagedAttribute，ManagedOperation，或者ManagedOperationParameter
+
+currencyTimeLimit
+
+设置currencyTimeLimit描述符字段的值。
+
+ManagedResource 要么 ManagedAttribute
+
+defaultValue
+
+设置defaultValue描述符字段的值。
+
+ManagedAttribute
+
+log
+
+设置log描述符字段的值。
+
+ManagedResource
+
+logFile
+
+设置logFile描述符字段的值。
+
+ManagedResource
+
+persistPolicy
+
+设置persistPolicy描述符字段的值。
+
+ManagedResource
+
+persistPeriod
+
+设置persistPeriod描述符字段的值。
+
+ManagedResource
+
+persistLocation
+
+设置persistLocation描述符字段的值。
+
+ManagedResource
+
+persistName
+
+设置persistName描述符字段的值。
+
+ManagedResource
+
+name
+
+设置操作参数的显示名称。
+
+ManagedOperationParameter
+
+index
+
+设置操作参数的索引。
+
+ManagedOperationParameter
+
+5.2.4。使用AutodetectCapableMBeanInfoAssembler介面
+为了进一步简化配置，Spring包含了该 AutodetectCapableMBeanInfoAssembler接口，该MBeanInfoAssembler 接口扩展了该接口以添加对自动检测MBean资源的支持。如果您MBeanExporter使用实例配置 AutodetectCapableMBeanInfoAssembler，则可以对包含的Bean进行“投票”以暴露给JMX。
+
+该AutodetectCapableMBeanInfo接口的唯一实现是MetadataMBeanInfoAssembler，该投票将包括该ManagedResource属性标记的任何bean 。在这种情况下，默认方法是将Bean名称用作ObjectName，这将导致类似于以下内容的配置：
+
+<beans>
+
+    <bean id="exporter" class="org.springframework.jmx.export.MBeanExporter">
+        <!-- notice how no 'beans' are explicitly configured here -->
+        <property name="autodetect" value="true"/>
+        <property name="assembler" ref="assembler"/>
+    </bean>
+    
+    <bean id="testBean" class="org.springframework.jmx.JmxTestBean">
+        <property name="name" value="TEST"/>
+        <property name="age" value="100"/>
+    </bean>
+    
+    <bean id="assembler" class="org.springframework.jmx.export.assembler.MetadataMBeanInfoAssembler">
+        <property name="attributeSource">
+            <bean class="org.springframework.jmx.export.annotation.AnnotationJmxAttributeSource"/>
+        </property>
+    </bean>
+
+</beans>
+请注意，在上述配置中，没有将任何bean传递给MBeanExporter。但是，由于JmxTestBean仍使用ManagedResource 属性标记并MetadataMBeanInfoAssembler检测到该属性并对其进行表决，因此该属性仍处于注册状态。这种方法的唯一问题是JmxTestBeannow的名称具有商业意义。您可以通过更改“控制Bean实例”中ObjectName 定义的默认创建行为来解决此问题。ObjectName
+
+5.2.5。使用Java接口定义管理接口
+除了之外MetadataMBeanInfoAssembler，Spring还包括 InterfaceBasedMBeanInfoAssembler，您可以使用来约束基于接口集合中定义的方法集公开的方法和属性。
+
+尽管公开MBean的标准机制是使用接口和简单的命名方案，InterfaceBasedMBeanInfoAssembler但是通过消除对命名约定的需要，允许您使用多个接口以及消除对实现MBean接口的bean的需求，扩展了此功能。
+
+考虑以下接口，该接口用于为JmxTestBean我们前面显示的类定义管理接口 ：
+
+public interface IJmxTestBean {
+
+    public int add(int x, int y);
+    
+    public long myOperation();
+    
+    public int getAge();
+    
+    public void setAge(int age);
+    
+    public void setName(String name);
+    
+    public String getName();
+
+}
+该接口定义在JMX MBean上作为操作和属性公开的方法和属性。以下代码显示了如何配置Spring JMX以使用此接口作为管理接口的定义：
+
+<beans>
+
+    <bean id="exporter" class="org.springframework.jmx.export.MBeanExporter">
+        <property name="beans">
+            <map>
+                <entry key="bean:name=testBean5" value-ref="testBean"/>
+            </map>
+        </property>
+        <property name="assembler">
+            <bean class="org.springframework.jmx.export.assembler.InterfaceBasedMBeanInfoAssembler">
+                <property name="managedInterfaces">
+                    <value>org.springframework.jmx.IJmxTestBean</value>
+                </property>
+            </bean>
+        </property>
+    </bean>
+    
+    <bean id="testBean" class="org.springframework.jmx.JmxTestBean">
+        <property name="name" value="TEST"/>
+        <property name="age" value="100"/>
+    </bean>
+
+</beans>
+在前面的示例中，将InterfaceBasedMBeanInfoAssembler其配置为IJmxTestBean在构造任何bean的管理接口时使用该 接口。重要的是要理解，InterfaceBasedMBeanInfoAssembler 不需要由处理的bean来实现用于生成JMX管理接口的接口。
+
+在上述情况下，该IJmxTestBean接口用于为所有bean构造所有管理接口。在许多情况下，这不是理想的行为，您可能想对不同的bean使用不同的接口。在这种情况下，您可以通过该 属性传递 InterfaceBasedMBeanInfoAssembler一个Properties实例interfaceMappings，其中每个条目的键是Bean名称，每个条目的值是一个逗号分隔的接口名称列表，用于该Bean。
+
+如果没有通过managedInterfaces或 interfaceMappings属性指定管理接口，则InterfaceBasedMBeanInfoAssemblerref会反映在bean上，并使用该bean实现的所有接口来创建管理接口。
+
+5.2.6。使用MethodNameBasedMBeanInfoAssembler
+MethodNameBasedMBeanInfoAssembler使您可以指定作为属性和操作公开给JMX的方法名称的列表。以下代码显示了示例配置：
+```xml
+<bean id="exporter" class="org.springframework.jmx.export.MBeanExporter">
+    <property name="beans">
+        <map>
+            <entry key="bean:name=testBean5" value-ref="testBean"/>
+        </map>
+    </property>
+    <property name="assembler">
+        <bean class="org.springframework.jmx.export.assembler.MethodNameBasedMBeanInfoAssembler">
+            <property name="managedMethods">
+                <value>add,myOperation,getName,setName,getAge</value>
+            </property>
+        </bean>
+    </property>
+</bean>
+```
+在前面的例子中，可以看到的是，add和myOperation方法被公开为JMX操作，和getName()，setName(String)和getAge()被暴露为JMX属性的适当的一半。在前面的代码中，方法映射适用于公开给JMX的bean。要逐个bean地控制方法公开，可以使用methodMappingsof属性MethodNameMBeanInfoAssembler将bean名称映射到方法名称列表。
+### 5.3. 控制ObjectName您的Bean的实例
+在幕后，MBeanExporter委托的实现为 它注册的每个beanObjectNamingStrategy获取ObjectName实例。默认情况下，默认实现KeyNamingStrategy使用的键 beans Map作为ObjectName。此外，KeyNamingStrategy可以将的键映射beans Map到一个Properties文件（或多个文件）中的条目以解决 ObjectName。除了之外KeyNamingStrategy，Spring还提供了两个附加的 ObjectNamingStrategy实现：（基于bean的JVM身份IdentityNamingStrategy构建一个 ObjectName）和MetadataNamingStrategy（使用源级元数据获取ObjectName）。
+#### 5.3.1. ObjectName从属性读取实例
+您可以配置自己的KeyNamingStrategy实例，并将其配置为ObjectName从Properties实例读取 实例，而不使用Bean键。在 KeyNamingStrategy试图定位在入门Properties用钥匙对应于bean的关键。如果没有找到条目，或者Properties实例是 null，则使用bean密钥本身。
+
+以下代码显示的示例配置KeyNamingStrategy：
