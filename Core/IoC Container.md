@@ -636,4 +636,268 @@ public class SimpleMovieLister {
 
 通常，您可以信任Spring做正确的事。它在容器加载时检测配置问题，例如对不存在的Bean的引用和循环依赖项。在实际创建bean时，Spring设置属性并尽可能晚地解决依赖关系。这意味着，如果创建对象或其依赖项之一有问题，则正确加载了Spring的容器以后可以在您请求对象时生成异常-例如，由于缺少或无效，Bean引发异常属性。某些配置问题的这种潜在的延迟可见性是为什么`ApplicationContext`默认情况下，实现会实例化单例bean。在实际需要这些bean之前创建这些bean需要花费一些前期时间和内存，但您发现它们在`ApplicationContext`创建时（而不是稍后）就会发现配置问题。您仍然可以覆盖此默认行为，以便单例bean延迟初始化，而不是预先实例化。
 
-如果不存在循环依赖关系，则在将一个或多个协作Bean注入从属Bean时，每个协作Bean在注入到从属Bean中之前都已完全配置。这意味着，如果bean A依赖于bean B，则Spring IoC容器会在对bean A调用setter方法之前完全配置beanB。换句话说，bean被实例化（如果不是预先实例化的singleton）。 ），设置其依赖项，并调用相关的生命周期方法（例如已[配置的init方法](https://docs.spring.io/spring-framework/docs/current/reference/html/core.html#beans-factory-lifecycle-initializingbean) 或[InitializingBean回调方法](https://docs.spring.io/spring-framework/docs/current/reference/html/core.html#beans-factory-lifecycle-initializingbean)）。
+如果不存在循环依赖关系，则在将一个或多个协作Bean注入从属Bean时，每个协作Bean在注入到从属Bean中之前都已完全配置。这意味着，如果bean A依赖于bean B，则Spring IoC容器会在对bean A调用setter方法之前完全配置beanB。换句话说，bean被实例化（如果不是预先实例化的singleton）。 设置其依赖项，并调用相关的生命周期方法（例如已[配置的init方法](https://docs.spring.io/spring-framework/docs/current/reference/html/core.html#beans-factory-lifecycle-initializingbean) 或[InitializingBean回调方法](https://docs.spring.io/spring-framework/docs/current/reference/html/core.html#beans-factory-lifecycle-initializingbean)）。
+
+##### Examples of Dependency Injection依赖注入的例子
+
+以下示例将基于XML的配置元数据用于基于setter的DI。Spring XML配置文件的一小部分指定了一些bean定义，如下所示：
+
+```xml
+<bean id="exampleBean" class="examples.ExampleBean">
+    <!-- setter injection using the nested ref element -->
+    <property name="beanOne">
+        <ref bean="anotherExampleBean"/>
+    </property>
+
+    <!-- setter injection using the neater ref attribute -->
+    <property name="beanTwo" ref="yetAnotherBean"/>
+    <property name="integerProperty" value="1"/>
+</bean>
+
+<bean id="anotherExampleBean" class="examples.AnotherBean"/>
+<bean id="yetAnotherBean" class="examples.YetAnotherBean"/>
+```
+
+以下示例显示了相应的`ExampleBean`类：
+
+```java
+public class ExampleBean {
+
+    private AnotherBean beanOne;
+
+    private YetAnotherBean beanTwo;
+
+    private int i;
+
+    public void setBeanOne(AnotherBean beanOne) {
+        this.beanOne = beanOne;
+    }
+
+    public void setBeanTwo(YetAnotherBean beanTwo) {
+        this.beanTwo = beanTwo;
+    }
+
+    public void setIntegerProperty(int i) {
+        this.i = i;
+    }
+}
+```
+
+在前面的示例中，声明了setter以与XML文件中指定的属性匹配。以下示例使用基于构造函数的DI：
+
+```xml
+<bean id="exampleBean" class="examples.ExampleBean">
+    <!-- constructor injection using the nested ref element -->
+    <constructor-arg>
+        <ref bean="anotherExampleBean"/>
+    </constructor-arg>
+
+    <!-- constructor injection using the neater ref attribute -->
+    <constructor-arg ref="yetAnotherBean"/>
+
+    <constructor-arg type="int" value="1"/>
+</bean>
+
+<bean id="anotherExampleBean" class="examples.AnotherBean"/>
+<bean id="yetAnotherBean" class="examples.YetAnotherBean"/>
+```
+
+以下示例显示了相应的`ExampleBean`类：
+
+```java
+public class ExampleBean {
+
+    private AnotherBean beanOne;
+
+    private YetAnotherBean beanTwo;
+
+    private int i;
+
+    public ExampleBean(
+        AnotherBean anotherBean, YetAnotherBean yetAnotherBean, int i) {
+        this.beanOne = anotherBean;
+        this.beanTwo = yetAnotherBean;
+        this.i = i;
+    }
+}
+```
+
+Bean定义中指定的构造函数参数用作的构造函数的参数`ExampleBean`。
+
+现在考虑该示例的一个变体，在该变体中，不是使用构造函数，而是告诉Spring调用`static`工厂方法以返回对象的实例：
+
+```xml
+<bean id="exampleBean" class="examples.ExampleBean" factory-method="createInstance">
+    <constructor-arg ref="anotherExampleBean"/>
+    <constructor-arg ref="yetAnotherBean"/>
+    <constructor-arg value="1"/>
+</bean>
+
+<bean id="anotherExampleBean" class="examples.AnotherBean"/>
+<bean id="yetAnotherBean" class="examples.YetAnotherBean"/>
+```
+
+以下示例显示了相应的`ExampleBean`类：
+
+```java
+public class ExampleBean {
+
+    // a private constructor
+    private ExampleBean(...) {
+        ...
+    }
+
+    // a static factory method; the arguments to this method can be
+    // considered the dependencies of the bean that is returned,
+    // regardless of how those arguments are actually used.
+    public static ExampleBean createInstance (
+        AnotherBean anotherBean, YetAnotherBean yetAnotherBean, int i) {
+
+        ExampleBean eb = new ExampleBean (...);
+        // some other operations...
+        return eb;
+    }
+}
+```
+
+`static`工厂方法的参数由`<constructor-arg/>`元素提供，就像实际使用构造函数一样。factory方法返回的类的类型不必与包含`static`factory方法的类具有相同的类型（尽管在此示例中是）。实例（非静态）工厂方法可以以基本上相同的方式使用（除了使用`factory-bean`属性代替使用`class`属性外），因此在此不讨论这些细节。
+
+#### 1.4.2. Dependencies and Configuration in Detail 依赖性和详细配置
+
+如上[一节所述](https://docs.spring.io/spring-framework/docs/current/reference/html/core.html#beans-factory-collaborators)，您可以将bean属性和构造函数参数定义为对其他托管bean（协作者）的引用或内联定义的值。Spring的基于XML的配置元数据为此目的在其`<property/>`和`<constructor-arg/>`元素中支持子元素类型。
+
+##### Straight Values (Primitives, Strings, and so on) 直值（原语，字符串等）
+
+在`value`所述的属性`<property/>`元素指定属性或构造器参数的人类可读的字符串表示。Spring的 [转换服务](https://docs.spring.io/spring-framework/docs/current/reference/html/core.html#core-convert-ConversionService-API)用于将这些值从转换`String`为属性或参数的实际类型。以下示例显示了设置的各种值：
+
+```xml
+<bean id="myDataSource" class="org.apache.commons.dbcp.BasicDataSource" destroy-method="close">
+    <!-- results in a setDriverClassName(String) call -->
+    <property name="driverClassName" value="com.mysql.jdbc.Driver"/>
+    <property name="url" value="jdbc:mysql://localhost:3306/mydb"/>
+    <property name="username" value="root"/>
+    <property name="password" value="misterkaoli"/>
+</bean>
+```
+
+以下示例使用[p-namespace](https://docs.spring.io/spring-framework/docs/current/reference/html/core.html#beans-p-namespace)进行更简洁的XML配置：
+
+```xml
+<beans xmlns="http://www.springframework.org/schema/beans"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xmlns:p="http://www.springframework.org/schema/p"
+    xsi:schemaLocation="http://www.springframework.org/schema/beans
+    https://www.springframework.org/schema/beans/spring-beans.xsd">
+
+    <bean id="myDataSource" class="org.apache.commons.dbcp.BasicDataSource"
+        destroy-method="close"
+        p:driverClassName="com.mysql.jdbc.Driver"
+        p:url="jdbc:mysql://localhost:3306/mydb"
+        p:username="root"
+        p:password="misterkaoli"/>
+
+</beans>
+```
+
+前面的XML更简洁。但是，除非在创建bean定义时使用支持自动属性完成的IDE（例如[IntelliJ IDEA](https://www.jetbrains.com/idea/)或[Spring Tools for Eclipse](https://spring.io/tools)），否则错字是在运行时而不是设计时发现的。强烈建议您使用此类IDE帮助。
+
+您还可以配置`java.util.Properties`实例，如下所示：
+
+```xml
+<bean id="mappings"
+    class="org.springframework.context.support.PropertySourcesPlaceholderConfigurer">
+
+    <!-- typed as a java.util.Properties -->
+    <property name="properties">
+        <value>
+            jdbc.driver.className=com.mysql.jdbc.Driver
+            jdbc.url=jdbc:mysql://localhost:3306/mydb
+        </value>
+    </property>
+</bean>
+```
+
+Spring容器使用JavaBeans机制将`<value/>`元素内的文本转换为 `java.util.Properties`实例`PropertyEditor`。这是一个不错的捷径，并且是Spring团队偏爱使用嵌套`<value/>`元素而不是使用`value`属性样式的几个地方之一。
+
+###### The `idref` element `idref`元素
+
+所述`idref`元件是一个简单的防错方法对通过`id`（一个字符串值-而不是参考）在该容器另一个bean的一个`<constructor-arg/>`或`<property/>` 元件。以下示例显示了如何使用它：
+
+```xml
+<bean id="theTargetBean" class="..."/>
+
+<bean id="theClientBean" class="...">
+    <property name="targetName">
+        <idref bean="theTargetBean"/>
+    </property>
+</bean>
+```
+
+前面的bean定义片段（在运行时）与下面的片段完全等效：
+
+```xml
+<bean id="theTargetBean" class="..." />
+
+<bean id="client" class="...">
+    <property name="targetName" value="theTargetBean"/>
+</bean>
+```
+
+第一种形式优于第二种形式，因为使用`idref`标记可以使容器在部署时验证所引用的命名Bean实际上是否存在。在第二个变体中，不对传递给Bean`targetName`属性的值进行验证`client`。拼写错误仅在`client`实际实例化bean时才发现（可能会导致致命的结果）。如果该`client` bean是[原型](https://docs.spring.io/spring-framework/docs/current/reference/html/core.html#beans-factory-scopes)bean，则只能在部署容器后很长时间才能发现此错字和所产生的异常。
+
+|      | 元素 的`local`属性在`idref`4.0 bean XSD中不再受支持，因为它不再提供常规`bean`引用上的值。升级到4.0模式时，将现有`idref local`引用更改`idref bean`为。 |
+| ---- | ------------------------------------------------------------ |
+|      |                                                              |
+
+其中一个共同的地方（至少在早期比Spring 2.0版本）`<idref/>`元素带来的值在配置[AOP拦截](https://docs.spring.io/spring-framework/docs/current/reference/html/core.html#aop-pfb-1)在 `ProxyFactoryBean`bean定义。`<idref/>`在指定拦截器名称时使用元素可防止您拼写错误的拦截器ID。
+
+##### References to Other Beans (Collaborators) 对其他Bean的引用（协作者）
+
+所述`ref`元件是内部的最终元件`<constructor-arg/>`或`<property/>` 定义元素。在这里，您将bean的指定属性的值设置为对容器管理的另一个bean（协作者）的引用。引用的bean是要设置其属性的bean的依赖关系，并且在设置属性之前根据需要对其进行初始化。（如果协作者是单例bean，则它可能已经由容器初始化了。）所有引用最终都是对另一个对象的引用。作用域和验证取决于是否通过`bean`或`parent`属性指定另一个对象的ID或名称。
+
+通过`<ref/>`标记的`bean`属性指定目标bean是最通用的形式，并且允许创建对同一容器或父容器中任何bean的引用，而不管它是否在同一XML文件中。该`bean`属性的值 可以`id`与目标Bean的属性相同，也可以与目标Bean的属性之一相同`name`。以下示例显示如何使用`ref`元素：
+
+```xml
+<ref bean="someBean"/>
+```
+
+通过`parent`属性指定目标Bean将创建对当前容器的父容器中的Bean的引用。该`parent` 属性的值可以`id`与目标Bean的属性或目标Bean的`name`属性中的值之一相同。目标Bean必须位于当前容器的父容器中。主要在具有容器层次结构并且要使用与父bean名称相同的代理将现有bean封装在父容器中时，才应使用此bean参考变量。以下清单对显示了如何使用该`parent`属性：
+
+```xml
+<!-- in the parent context -->
+<bean id="accountService" class="com.something.SimpleAccountService">
+    <!-- insert dependencies as required as here -->
+</bean>
+<!-- in the child (descendant) context -->
+<bean id="accountService" <!-- bean name is the same as the parent bean -->
+    class="org.springframework.aop.framework.ProxyFactoryBean">
+    <property name="target">
+        <ref parent="accountService"/> <!-- notice how we refer to the parent bean -->
+    </property>
+    <!-- insert other configuration and dependencies as required here -->
+</bean>
+```
+
+|      | 元素 的`local`属性在`ref`4.0 bean XSD中不再受支持，因为它不再提供常规`bean`引用上的值。升级到4.0模式时，将现有`ref local`引用更改`ref bean`为。 |
+| ---- | ------------------------------------------------------------ |
+|      |                                                              |
+
+##### Inner Beans 内部Beans
+
+元件`<property/>`或`<constructor-arg/>`元件内部的`<bean/>`限定内部Beans，如下面的示例所示：
+
+```xml
+<bean id="outer" class="...">
+    <!-- instead of using a reference to a target bean, simply define the target bean inline -->
+    <property name="target">
+        <bean class="com.example.Person"> <!-- this is the inner bean -->
+            <property name="name" value="Fiona Apple"/>
+            <property name="age" value="25"/>
+        </bean>
+    </property>
+</bean>
+```
+
+内部bean定义不需要定义的ID或名称。如果指定，则容器不使用该值作为标识符。容器还会忽略`scope`创建时的标志，因为内部Bean始终是匿名的，并且始终与外部Bean一起创建。不能独立访问内部bean，也不能将它们注入到协作bean中而不是封装在bean中。
+
+作为一个极端的例子，可以从自定义范围接收破坏回调，例如，针对单例bean中包含的请求范围内的bean。内部bean实例的创建与其包含的bean绑定在一起，但是销毁回调使它可以参与请求范围的生命周期。这不是常见的情况。内部bean通常只共享其包含bean的作用域。
