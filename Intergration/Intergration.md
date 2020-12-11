@@ -1661,3 +1661,1183 @@ Spring提供了一个XML名称空间来简化JMS配置。要使用JMS名称空�
 | `transaction-manager`       | 对Spring`JtaTransactionManager`或a的 引用，`javax.transaction.TransactionManager`用于为每个传入消息启动XA事务。如果未指定，则使用本机确认（请参阅 `acknowledge`属性）。 |
 | `concurrency`               | 每个侦听器启动的并发会话或使用者的数量。它可以是表示最大数的简单数字（例如`5`），也可以是表示下限和上限的范围（例如`3-5`）。请注意，指定的最小值只是一个提示，通常在运行时使用JCA侦听器容器时将被忽略。预设值为1。 |
 | `prefetch`                  | 加载到单个会话中的最大消息数。请注意，增加此数字可能会导致并发消费者饥饿。 |
+
+## 5. JMX
+
+Spring中的JMX（Java管理扩展）支持提供的功能使您可以轻松，透明地将Spring应用程序集成到JMX基础结构中。
+
+JMX？
+
+本章不是JMX的介绍。它没有试图解释为什么您可能要使用JMX。如果您不熟悉JMX，请参阅本章末尾的[其他资源](https://docs.spring.io/spring-framework/docs/current/reference/html/integration.html#jmx-resources)。
+
+具体来说，Spring的JMX支持提供了四个核心功能：
+
+- 将任何Spring bean自动注册为JMX MBean。
+- 用于控制bean的管理界面的灵活机制。
+- 通过远程JSR-160连接器以声明方式公开MBean。
+- 本地和远程MBean资源的简单代理。
+
+这些功能旨在在不将应用程序组件耦合到Spring或JMX接口和类的情况下工作。实际上，在大多数情况下，您的应用程序类无需了解Spring或JMX即可利用Spring JMX功能。
+
+### 5.1。将您的Bean导出到JMX（Exporting Your Beans to JMX）
+
+Spring的JMX框架的核心类是`MBeanExporter`。此类负责获取您的Spring bean并向JMX注册它们`MBeanServer`。例如，考虑以下类：
+
+```java
+package org.springframework.jmx;
+
+public class JmxTestBean implements IJmxTestBean {
+
+    private String name;
+    private int age;
+    private boolean isSuperman;
+
+    public int getAge() {
+        return age;
+    }
+
+    public void setAge(int age) {
+        this.age = age;
+    }
+
+    public void setName(String name) {
+        this.name = name;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public int add(int x, int y) {
+        return x + y;
+    }
+
+    public void dontExposeMe() {
+        throw new RuntimeException();
+    }
+}
+```
+
+要将此bean的属性和方法公开为MBean的属性和操作，可以`MBeanExporter`在配置文件中配置该类的实例，然后传入bean，如以下示例所示：
+
+```xml
+<beans>
+    <!-- this bean must not be lazily initialized if the exporting is to happen -->
+    <bean id="exporter" class="org.springframework.jmx.export.MBeanExporter" lazy-init="false">
+        <property name="beans">
+            <map>
+                <entry key="bean:name=testBean1" value-ref="testBean"/>
+            </map>
+        </property>
+    </bean>
+    <bean id="testBean" class="org.springframework.jmx.JmxTestBean">
+        <property name="name" value="TEST"/>
+        <property name="age" value="100"/>
+    </bean>
+</beans>
+```
+
+前面的配置片段中相关的bean定义是`exporter` bean。该`beans`属性`MBeanExporter`确切地告诉您必须将哪些bean导出到JMX `MBeanServer`。在默认配置中，中的每个条目的键`beans` `Map`都用作`ObjectName`相应条目值所引用的Bean。您可以更改此行为，如[控制`ObjectName`Bean的实例中](https://docs.spring.io/spring-framework/docs/current/reference/html/integration.html#jmx-naming)所述。
+
+使用此配置，该`testBean`Bean在下方显示为MBean `ObjectName` `bean:name=testBean1`。默认情况下，`public`bean的所有属性都公开为属性，所有`public`方法（从`Object`类继承的方法除外 ）都公开为操作。
+
+|      | `MBeanExporter`是一个`Lifecycle`bean（请参阅[启动和关闭回调](https://docs.spring.io/spring-framework/docs/current/reference/html/core.html#beans-factory-lifecycle-processor)）。默认情况下，MBean在应用程序生命周期中尽可能晚地导出。您可以`phase`通过设置`autoStartup`标志来配置导出发生的位置或禁用自动注册。 |
+| ---- | ------------------------------------------------------------ |
+|      |                                                              |
+
+#### 5.1.1。创建一个MBeanServer（Creating an MBeanServer）
+
+上[一节中](https://docs.spring.io/spring-framework/docs/current/reference/html/integration.html#jmx-exporting)显示的配置假定该应用程序正在一个（并且只有一个）`MBeanServer` 已经运行的环境中运行。在这种情况下，Spring尝试找到正在运行的`MBeanServer`服务器，并将您的bean注册到该服务器（如果有）。当您的应用程序在具有自己的容器（例如Tomcat或IBM WebSphere）中运行时，此行为很有用`MBeanServer`。
+
+但是，此方法在独立环境中或在未提供的容器内运行时无用`MBeanServer`。为了解决这个问题，您可以`MBeanServer`通过将`org.springframework.jmx.support.MBeanServerFactoryBean`类的实例添加到配置中来声明性地创建 实例 。您还可以`MBeanServer`通过将`MBeanExporter`实例`server`属性的`MBeanServer`值设置为所返回的值 来确保使用特定对象 `MBeanServerFactoryBean`，如以下示例所示：
+
+```xml
+<beans>
+
+    <bean id="mbeanServer" class="org.springframework.jmx.support.MBeanServerFactoryBean"/>
+
+    <!--
+    this bean needs to be eagerly pre-instantiated in order for the exporting to occur;
+    this means that it must not be marked as lazily initialized
+    -->
+    <bean id="exporter" class="org.springframework.jmx.export.MBeanExporter">
+        <property name="beans">
+            <map>
+                <entry key="bean:name=testBean1" value-ref="testBean"/>
+            </map>
+        </property>
+        <property name="server" ref="mbeanServer"/>
+    </bean>
+
+    <bean id="testBean" class="org.springframework.jmx.JmxTestBean">
+        <property name="name" value="TEST"/>
+        <property name="age" value="100"/>
+    </bean>
+
+</beans>
+```
+
+在前面的示例中，的实例由`MBeanServer`创建，`MBeanServerFactoryBean`并`MBeanExporter`通过`server`属性提供给。提供您自己的 `MBeanServer`实例时，`MBeanExporter`不会尝试查找正在运行 `MBeanServer`的`MBeanServer`实例并使用提供的实例。为了使其正常工作，您必须在类路径上具有JMX实现。
+
+#### 5.1.2。重用现有的`MBeanServer`（ Reusing an Existing `MBeanServer`）
+
+如果未指定服务器，则`MBeanExporter`尝试自动检测正在运行 `MBeanServer`。这在大多数仅使用一个`MBeanServer`实例的环境中都有效。但是，当存在多个实例时，导出器可能选择了错误的服务器。在这种情况下，应使用`MBeanServer` `agentId`指示要使用的实例，如以下示例所示：
+
+```xml
+<beans>
+    <bean id="mbeanServer" class="org.springframework.jmx.support.MBeanServerFactoryBean">
+        <!-- indicate to first look for a server -->
+        <property name="locateExistingServerIfPossible" value="true"/>
+        <!-- search for the MBeanServer instance with the given agentId -->
+        <property name="agentId" value="MBeanServer_instance_agentId>"/>
+    </bean>
+    <bean id="exporter" class="org.springframework.jmx.export.MBeanExporter">
+        <property name="server" ref="mbeanServer"/>
+        ...
+    </bean>
+</beans>
+```
+
+对于平台或现有实例`MBeanServer`具有`agentId`通过查找方法检索到的动态（或未知）的情况 ，应使用 [factory-method](https://docs.spring.io/spring-framework/docs/current/reference/html/core.html#beans-factory-class-static-factory-method)，如以下示例所示：
+
+```xml
+<beans>
+    <bean id="exporter" class="org.springframework.jmx.export.MBeanExporter">
+        <property name="server">
+            <!-- Custom MBeanServerLocator -->
+            <bean class="platform.package.MBeanServerLocator" factory-method="locateMBeanServer"/>
+        </property>
+    </bean>
+
+    <!-- other beans here -->
+
+</beans>
+```
+
+#### 5.1.3。延迟初始化的MBean（Lazily Initialized MBeans）
+
+如果使用`MBeanExporter`还配置了延迟初始化的来配置Bean ，`MBeanExporter`则不会破坏该协定，并避免实例化该Bean。相反，它向注册了一个代理，`MBeanServer`并推迟从容器中获取Bean，直到对该代理进行第一次调用为止。
+
+#### 5.1.4。自动注册MBean（Automatic Registration of MBeans）
+
+通过导出`MBeanExporter`并且已经是有效MBean的所有Bean都将按原样注册，`MBeanServer`而无需Spring的进一步干预。`MBeanExporter`通过将`autodetect` 属性设置为`true`，可以使MBean被自动检测，如以下示例所示：
+
+```xml
+<bean id="exporter" class="org.springframework.jmx.export.MBeanExporter">
+    <property name="autodetect" value="true"/>
+</bean>
+
+<bean name="spring:mbean=true" class="org.springframework.jmx.export.TestDynamicMBean"/>
+```
+
+在前面的示例中，被调用的bean`spring:mbean=true`已经是有效的JMX MBean，并由Spring自动注册。默认情况下，自动检测到JMX注册的bean的bean名称用作`ObjectName`。您可以覆盖此行为，如[控制`ObjectName`Bean的实例中所述](https://docs.spring.io/spring-framework/docs/current/reference/html/integration.html#jmx-naming)。
+
+#### 5.1.5。控制注册行为（Controlling the Registration Behavior）
+
+考虑这样一个春天的情景`MBeanExporter`尝试注册一个`MBean` 与`MBeanServer`使用`ObjectName` `bean:name=testBean1`。如果`MBean` 实例已经在该实例下注册`ObjectName`，则默认行为是失败（并抛出`InstanceAlreadyExistsException`）。
+
+您可以精确控制将`MBean`进行注册时发生的情况`MBeanServer`。Spring的JMX支持允许三种不同的注册行为，以在注册过程发现an`MBean`已在同一注册项下进行注册时控制注册行为`ObjectName`。下表总结了这些注册行为：
+
+| 注册行为           | 说明                                                         |
+| :----------------- | :----------------------------------------------------------- |
+| `FAIL_ON_EXISTING` | 这是默认的注册行为。如果一个`MBean`实例已经在相同的注册`ObjectName`，将`MBean`正在注册不注册，而`InstanceAlreadyExistsException`被抛出。现有 `MBean`不受影响。 |
+| `IGNORE_EXISTING`  | 如果`MBean`已经在同一实例下注册了实例`ObjectName`，那么 `MBean`正在注册的实例不会被注册。现有`MBean`不受影响，并且不会`Exception`抛出任何异常。这在多个应用程序要共享一个共享`MBean`中的共享的设置中很有用`MBeanServer`。 |
+| `REPLACE_EXISTING` | 如果某个`MBean`实例已经在同一实例下注册`ObjectName`，那么`MBean`先前已注册的现有实例将被取消注册，而新 实例将`MBean`在其位置注册（新`MBean`实例将有效替换先前的实例）。 |
+
+上表中的值被定义为`RegistrationPolicy`该类上的枚举。如果要更改默认注册行为，则需要将定义`registrationPolicy`上的属性值设置 `MBeanExporter`为这些值之一。
+
+下面的示例显示如何从默认注册行为更改为`REPLACE_EXISTING`行为：
+
+```xml
+<beans>
+
+    <bean id="exporter" class="org.springframework.jmx.export.MBeanExporter">
+        <property name="beans">
+            <map>
+                <entry key="bean:name=testBean1" value-ref="testBean"/>
+            </map>
+        </property>
+        <property name="registrationPolicy" value="REPLACE_EXISTING"/>
+    </bean>
+
+    <bean id="testBean" class="org.springframework.jmx.JmxTestBean">
+        <property name="name" value="TEST"/>
+        <property name="age" value="100"/>
+    </bean>
+
+</beans>
+```
+
+### 5.2。控制Bean的管理接口（Controlling the Management Interface of Your Beans）
+
+在上[一节](https://docs.spring.io/spring-framework/docs/current/reference/html/integration.html#jmx-exporting-registration-behavior)的示例中，您几乎没有控制bean的管理接口。`public` 每个导出的bean的所有属性和方法分别作为JMX属性和操作公开。为了对出口的Bean的哪些属性和方法实际作为JMX属性和操作公开进行更细粒度的控制，Spring JMX提供了一种全面且可扩展的机制来控制Bean的管理接口。
+
+#### 5.2.1。使用`MBeanInfoAssembler`介面（Using the `MBeanInfoAssembler` Interface）
+
+在后台，`MBeanExporter`代表`org.springframework.jmx.export.assembler.MBeanInfoAssembler`接口的实现，该 接口负责定义每个公开的bean的管理接口。默认实现 `org.springframework.jmx.export.assembler.SimpleReflectiveMBeanInfoAssembler`定义了一个管理接口，该接口公开了所有公共属性和方法（如前面各节中的示例所示）。Spring提供了`MBeanInfoAssembler`接口的两个附加实现，使您可以使用源级元数据或任何任意接口来控制生成的管理接口。
+
+#### 5.2.2。使用源级元数据：Java注释（Using Source-level Metadata: Java Annotations）
+
+通过使用`MetadataMBeanInfoAssembler`，您可以使用源级元数据为bean定义管理界面。`org.springframework.jmx.export.metadata.JmxAttributeSource`接口封装了元数据的读取。Spring JMX提供了使用Java注释的默认实现，即 `org.springframework.jmx.export.annotation.AnnotationJmxAttributeSource`。您必须`MetadataMBeanInfoAssembler`使用`JmxAttributeSource`接口的实现实例配置，才能使其正常运行（没有默认值）。
+
+要标记要导出到JMX的bean，应使用注释对bean类进行 `ManagedResource`注释。您必须用`ManagedOperation`注释将要公开的每个方法标记为操作，并用注释将要公开的每个属性标记为`ManagedAttribute`。标记属性时，可以省略getter或setter的注释，以分别创建只写或只读属性。
+
+|      | 带`ManagedResource`注释的Bean必须是公共的，公开操作或属性的方法也必须是公共的。 |
+| ---- | ------------------------------------------------------------ |
+|      |                                                              |
+
+以下示例显示了`JmxTestBean`我们在[创建MBeanServer中](https://docs.spring.io/spring-framework/docs/current/reference/html/integration.html#jmx-exporting-mbeanserver)使用的类的带注释版本：
+
+```java
+package org.springframework.jmx;
+
+import org.springframework.jmx.export.annotation.ManagedResource;
+import org.springframework.jmx.export.annotation.ManagedOperation;
+import org.springframework.jmx.export.annotation.ManagedAttribute;
+
+@ManagedResource(
+        objectName="bean:name=testBean4",
+        description="My Managed Bean",
+        log=true,
+        logFile="jmx.log",
+        currencyTimeLimit=15,
+        persistPolicy="OnUpdate",
+        persistPeriod=200,
+        persistLocation="foo",
+        persistName="bar")
+public class AnnotationTestBean implements IJmxTestBean {
+
+    private String name;
+    private int age;
+
+    @ManagedAttribute(description="The Age Attribute", currencyTimeLimit=15)
+    public int getAge() {
+        return age;
+    }
+
+    public void setAge(int age) {
+        this.age = age;
+    }
+
+    @ManagedAttribute(description="The Name Attribute",
+            currencyTimeLimit=20,
+            defaultValue="bar",
+            persistPolicy="OnUpdate")
+    public void setName(String name) {
+        this.name = name;
+    }
+
+    @ManagedAttribute(defaultValue="foo", persistPeriod=300)
+    public String getName() {
+        return name;
+    }
+
+    @ManagedOperation(description="Add two numbers")
+    @ManagedOperationParameters({
+        @ManagedOperationParameter(name = "x", description = "The first number"),
+        @ManagedOperationParameter(name = "y", description = "The second number")})
+    public int add(int x, int y) {
+        return x + y;
+    }
+
+    public void dontExposeMe() {
+        throw new RuntimeException();
+    }
+
+}
+```
+
+在前面的示例中，您可以看到`JmxTestBean`该类标记有 `ManagedResource`注释，并且该`ManagedResource`注释配置了一组属性。这些属性可用于配置MBean生成的MBean的各个方面，`MBeanExporter`稍后将在[Source-level Metadata Types中进行](https://docs.spring.io/spring-framework/docs/current/reference/html/integration.html#jmx-interface-metadata-types)详细说明。
+
+无论是`age`和`name`属性注释与`ManagedAttribute` 注释，但是，在的情况下`age`财产，只标记了getter。这导致这两个属性都作为属性包含在管理界面中，但是该`age`属性是只读的。
+
+最后，该`add(int, int)`方法带有`ManagedOperation`属性标记，而`dontExposeMe()`方法则没有。使用时，这将导致管理界面仅包含一个操作（`add(int, int)`）`MetadataMBeanInfoAssembler`。
+
+以下配置显示了如何配置`MBeanExporter`来使用 `MetadataMBeanInfoAssembler`：
+
+```xml
+<beans>
+    <bean id="exporter" class="org.springframework.jmx.export.MBeanExporter">
+        <property name="assembler" ref="assembler"/>
+        <property name="namingStrategy" ref="namingStrategy"/>
+        <property name="autodetect" value="true"/>
+    </bean>
+
+    <bean id="jmxAttributeSource"
+            class="org.springframework.jmx.export.annotation.AnnotationJmxAttributeSource"/>
+
+    <!-- will create management interface using annotation metadata -->
+    <bean id="assembler"
+            class="org.springframework.jmx.export.assembler.MetadataMBeanInfoAssembler">
+        <property name="attributeSource" ref="jmxAttributeSource"/>
+    </bean>
+
+    <!-- will pick up the ObjectName from the annotation -->
+    <bean id="namingStrategy"
+            class="org.springframework.jmx.export.naming.MetadataNamingStrategy">
+        <property name="attributeSource" ref="jmxAttributeSource"/>
+    </bean>
+
+    <bean id="testBean" class="org.springframework.jmx.AnnotationTestBean">
+        <property name="name" value="TEST"/>
+        <property name="age" value="100"/>
+    </bean>
+</beans>
+```
+
+在前面的示例中，`MetadataMBeanInfoAssembler`已经为Bean配置了`AnnotationJmxAttributeSource`该类的实例，并通过`MBeanExporter` 汇编程序属性将其传递给。这是为Spring公开的MBean利用元数据驱动的管理接口所需要的全部。
+
+#### 5.2.3。源级元数据类型（Source-level Metadata Types）
+
+下表描述了可在Spring JMX中使用的源级别元数据类型：
+
+| 目的                                      | 注解                                                         | 注释类型                 |
+| :---------------------------------------- | :----------------------------------------------------------- | :----------------------- |
+| 将a的所有实例标记`Class`为JMX托管资源。   | `@ManagedResource`                                           | 类                       |
+| 将方法标记为JMX操作。                     | `@ManagedOperation`                                          | 方法                     |
+| 将一个getter或setter标记为JMX属性的一半。 | `@ManagedAttribute`                                          | 方法（仅getter和setter） |
+| 定义操作参数的描述。                      | `@ManagedOperationParameter` 和 `@ManagedOperationParameters` | 方法                     |
+
+下表描述了可在这些源级元数据类型上使用的配置参数：
+
+| 参数                | 描述                                                     | 适用于                                                       |
+| :------------------ | :------------------------------------------------------- | :----------------------------------------------------------- |
+| `ObjectName`        | 用于`MetadataNamingStrategy`确定`ObjectName`托管资源的。 | `ManagedResource`                                            |
+| `description`       | 设置资源，属性或操作的友好描述。                         | `ManagedResource`，`ManagedAttribute`，`ManagedOperation`，或者`ManagedOperationParameter` |
+| `currencyTimeLimit` | 设置`currencyTimeLimit`描述符字段的值。                  | `ManagedResource` 要么 `ManagedAttribute`                    |
+| `defaultValue`      | 设置`defaultValue`描述符字段的值。                       | `ManagedAttribute`                                           |
+| `log`               | 设置`log`描述符字段的值。                                | `ManagedResource`                                            |
+| `logFile`           | 设置`logFile`描述符字段的值。                            | `ManagedResource`                                            |
+| `persistPolicy`     | 设置`persistPolicy`描述符字段的值。                      | `ManagedResource`                                            |
+| `persistPeriod`     | 设置`persistPeriod`描述符字段的值。                      | `ManagedResource`                                            |
+| `persistLocation`   | 设置`persistLocation`描述符字段的值。                    | `ManagedResource`                                            |
+| `persistName`       | 设置`persistName`描述符字段的值。                        | `ManagedResource`                                            |
+| `name`              | 设置操作参数的显示名称。                                 | `ManagedOperationParameter`                                  |
+| `index`             | 设置操作参数的索引。                                     | `ManagedOperationParameter`                                  |
+
+#### 5.2.4。使用`AutodetectCapableMBeanInfoAssembler`介面（ Using the `AutodetectCapableMBeanInfoAssembler` Interface）
+
+为了进一步简化配置，Spring包含了该 `AutodetectCapableMBeanInfoAssembler`接口，该`MBeanInfoAssembler` 接口扩展了该接口以添加对自动检测MBean资源的支持。如果您`MBeanExporter`使用实例配置 `AutodetectCapableMBeanInfoAssembler`，则可以对包含的Bean进行“投票”以暴露给JMX。
+
+该`AutodetectCapableMBeanInfo`接口的唯一实现是`MetadataMBeanInfoAssembler`，该投票将包括该`ManagedResource`属性标记的任何bean 。在这种情况下，默认方法是将Bean名称用作`ObjectName`，这将导致类似于以下内容的配置：
+
+```xml
+<beans>
+
+    <bean id="exporter" class="org.springframework.jmx.export.MBeanExporter">
+        <!-- notice how no 'beans' are explicitly configured here -->
+        <property name="autodetect" value="true"/>
+        <property name="assembler" ref="assembler"/>
+    </bean>
+
+    <bean id="testBean" class="org.springframework.jmx.JmxTestBean">
+        <property name="name" value="TEST"/>
+        <property name="age" value="100"/>
+    </bean>
+
+    <bean id="assembler" class="org.springframework.jmx.export.assembler.MetadataMBeanInfoAssembler">
+        <property name="attributeSource">
+            <bean class="org.springframework.jmx.export.annotation.AnnotationJmxAttributeSource"/>
+        </property>
+    </bean>
+
+</beans>
+```
+
+请注意，在上述配置中，没有将任何bean传递给`MBeanExporter`。但是，由于`JmxTestBean`仍使用`ManagedResource` 属性标记了，并且会`MetadataMBeanInfoAssembler`检测到该属性并对其进行投票以将其包含在内，因此仍然处于注册状态。这种方法的唯一问题是`JmxTestBean`now的名称具有商业意义。您可以通过更改“[控制](https://docs.spring.io/spring-framework/docs/current/reference/html/integration.html#jmx-naming)[Bean实例”中](https://docs.spring.io/spring-framework/docs/current/reference/html/integration.html#jmx-naming)`ObjectName` 定义的默认创建行为来解决此问题。[`ObjectName`](https://docs.spring.io/spring-framework/docs/current/reference/html/integration.html#jmx-naming)
+
+#### 5.2.5。使用Java接口定义管理接口（Defining Management Interfaces by Using Java Interfaces）
+
+除了之外`MetadataMBeanInfoAssembler`，Spring还包括 `InterfaceBasedMBeanInfoAssembler`，您可以使用来约束基于接口集合中定义的方法集公开的方法和属性。
+
+尽管公开MBean的标准机制是使用接口和简单的命名方案，`InterfaceBasedMBeanInfoAssembler`但是通过消除对命名约定的需要，允许您使用多个接口以及消除对实现MBean接口的bean的需求，扩展了此功能。
+
+考虑以下接口，该接口用于为`JmxTestBean`我们前面显示的类定义管理接口 ：
+
+```java
+public interface IJmxTestBean {
+
+    public int add(int x, int y);
+
+    public long myOperation();
+
+    public int getAge();
+
+    public void setAge(int age);
+
+    public void setName(String name);
+
+    public String getName();
+
+}
+```
+
+该接口定义在JMX MBean上作为操作和属性公开的方法和属性。以下代码显示了如何配置Spring JMX以使用该接口作为管理接口的定义：
+
+```xml
+<beans>
+
+    <bean id="exporter" class="org.springframework.jmx.export.MBeanExporter">
+        <property name="beans">
+            <map>
+                <entry key="bean:name=testBean5" value-ref="testBean"/>
+            </map>
+        </property>
+        <property name="assembler">
+            <bean class="org.springframework.jmx.export.assembler.InterfaceBasedMBeanInfoAssembler">
+                <property name="managedInterfaces">
+                    <value>org.springframework.jmx.IJmxTestBean</value>
+                </property>
+            </bean>
+        </property>
+    </bean>
+
+    <bean id="testBean" class="org.springframework.jmx.JmxTestBean">
+        <property name="name" value="TEST"/>
+        <property name="age" value="100"/>
+    </bean>
+
+</beans>
+```
+
+在前面的示例中，将`InterfaceBasedMBeanInfoAssembler`其配置为`IJmxTestBean`在构造任何bean的管理接口时使用该 接口。重要的是要理解，`InterfaceBasedMBeanInfoAssembler` 不需要由处理的bean来实现用于生成JMX管理接口的接口。
+
+在上述情况下，该`IJmxTestBean`接口用于为所有bean构造所有管理接口。在许多情况下，这不是理想的行为，您可能想对不同的bean使用不同的接口。在这种情况下，您可以通过该 属性传递 `InterfaceBasedMBeanInfoAssembler`一个`Properties`实例`interfaceMappings`，其中每个条目的键是Bean名称，每个条目的值是一个逗号分隔的接口名称列表，用于该Bean。
+
+如果没有通过`managedInterfaces`或 `interfaceMappings`属性指定管理接口，则`InterfaceBasedMBeanInfoAssembler`ref会反映在bean上，并使用该bean实现的所有接口来创建管理接口。
+
+#### 5.2.6。使用`MethodNameBasedMBeanInfoAssembler`（Using `MethodNameBasedMBeanInfoAssembler`)
+
+`MethodNameBasedMBeanInfoAssembler`使您可以指定作为属性和操作公开给JMX的方法名称的列表。以下代码显示了示例配置：
+
+```xml
+<bean id="exporter" class="org.springframework.jmx.export.MBeanExporter">
+    <property name="beans">
+        <map>
+            <entry key="bean:name=testBean5" value-ref="testBean"/>
+        </map>
+    </property>
+    <property name="assembler">
+        <bean class="org.springframework.jmx.export.assembler.MethodNameBasedMBeanInfoAssembler">
+            <property name="managedMethods">
+                <value>add,myOperation,getName,setName,getAge</value>
+            </property>
+        </bean>
+    </property>
+</bean>
+```
+
+在前面的例子中，可以看到的是，`add`和`myOperation`方法被公开为JMX操作，和`getName()`，`setName(String)`和`getAge()`被暴露为JMX属性的适当的一半。在前面的代码中，方法映射适用于JMX公开的bean。要逐个bean地控制方法公开，可以使用`methodMappings`of属性`MethodNameMBeanInfoAssembler`将bean名称映射到方法名称列表。
+
+### 5.3。控制`ObjectName`您的Bean的实例(Controlling `ObjectName` Instances for Your Beans)
+
+在幕后，`MBeanExporter`委托的实现为 它注册的每个bean`ObjectNamingStrategy`获取`ObjectName`实例。默认情况下，默认实现`KeyNamingStrategy`使用的键 `beans` `Map`作为`ObjectName`。此外，`KeyNamingStrategy`可以将的键映射`beans` `Map`到一个`Properties`文件（或多个文件）中的条目以解决 `ObjectName`。除了之外`KeyNamingStrategy`，Spring还提供了两个附加的 `ObjectNamingStrategy`实现：（基于bean的JVM身份`IdentityNamingStrategy`构建一个 `ObjectName`）和`MetadataNamingStrategy`（使用源级元数据获取`ObjectName`）。
+
+#### 5.3.1。`ObjectName`从属性读取实例(Reading `ObjectName` Instances from Properties)
+
+您可以配置自己的`KeyNamingStrategy`实例，并将其配置为`ObjectName`从`Properties`实例读取 实例，而不使用Bean键。在 `KeyNamingStrategy`试图定位在入门`Properties`用钥匙对应于bean的关键。如果没有找到条目，或者`Properties`实例是 `null`，则使用bean密钥本身。
+
+以下代码显示的示例配置`KeyNamingStrategy`：
+
+```xml
+<beans>
+
+    <bean id="exporter" class="org.springframework.jmx.export.MBeanExporter">
+        <property name="beans">
+            <map>
+                <entry key="testBean" value-ref="testBean"/>
+            </map>
+        </property>
+        <property name="namingStrategy" ref="namingStrategy"/>
+    </bean>
+
+    <bean id="testBean" class="org.springframework.jmx.JmxTestBean">
+        <property name="name" value="TEST"/>
+        <property name="age" value="100"/>
+    </bean>
+
+    <bean id="namingStrategy" class="org.springframework.jmx.export.naming.KeyNamingStrategy">
+        <property name="mappings">
+            <props>
+                <prop key="testBean">bean:name=testBean1</prop>
+            </props>
+        </property>
+        <property name="mappingLocations">
+            <value>names1.properties,names2.properties</value>
+        </property>
+    </bean>
+
+</beans>
+```
+
+前面的示例使用实例配置一个实例，`KeyNamingStrategy`该`Properties`实例是从`Properties`mapping属性定义的实例和位于mappings属性定义的路径中的属性文件合并而成的。在此配置中，给`testBean`Bean一个`ObjectName`of `bean:name=testBean1`，因为这是`Properties`实例中具有与Bean密钥相对应的密钥的条目。
+
+如果在`Properties`实例中找不到任何条目，则将Bean密钥名称用作`ObjectName`。
+
+#### 5.3.2。使用`MetadataNamingStrategy`(Using `MetadataNamingStrategy`)
+
+`MetadataNamingStrategy` 在每个bean上使用`objectName`属性的`ManagedResource`属性来创建`ObjectName`。以下代码显示的配置`MetadataNamingStrategy`：
+
+```xml
+<beans>
+
+    <bean id="exporter" class="org.springframework.jmx.export.MBeanExporter">
+        <property name="beans">
+            <map>
+                <entry key="testBean" value-ref="testBean"/>
+            </map>
+        </property>
+        <property name="namingStrategy" ref="namingStrategy"/>
+    </bean>
+
+    <bean id="testBean" class="org.springframework.jmx.JmxTestBean">
+        <property name="name" value="TEST"/>
+        <property name="age" value="100"/>
+    </bean>
+
+    <bean id="namingStrategy" class="org.springframework.jmx.export.naming.MetadataNamingStrategy">
+        <property name="attributeSource" ref="attributeSource"/>
+    </bean>
+
+    <bean id="attributeSource"
+            class="org.springframework.jmx.export.annotation.AnnotationJmxAttributeSource"/>
+
+</beans>
+```
+
+如果没有`objectName`为该`ManagedResource`属性提供任何值，`ObjectName`则使用以下格式创建一个 ：*[完全合格的软件包名称]：type = [short-classname]，name = [bean-name]*。例如，`ObjectName`为以下bean生成的将是 `com.example:type=MyClass,name=myBean`：
+
+```xml
+<bean id="myBean" class="com.example.MyClass"/>
+```
+
+#### 5.3.3。配置基于注释的MBean导出(Configuring Annotation-based MBean Export)
+
+如果您更喜欢使用[基于注释的方法](https://docs.spring.io/spring-framework/docs/current/reference/html/integration.html#jmx-interface-metadata)来定义您的管理界面，可以使用的便利子类`MBeanExporter`： `AnnotationMBeanExporter`。当定义这个子类的实例，你不再需要 `namingStrategy`，`assembler`和`attributeSource`配置，因为它总是使用基于标准的注释的Java元数据（自动检测始终为已启用好）。实际上，注释`MBeanExporter`不支持定义更简单的语法，而不是定义bean `@EnableMBeanExport` `@Configuration`，如以下示例所示：
+
+```java
+@Configuration
+@EnableMBeanExport
+public class AppConfig {
+
+}
+```
+
+如果您更喜欢基于XML的配置，则该`<context:mbean-export/>`元素具有相同的用途，并在下面的清单中显示：
+
+```xml
+<context:mbean-export/>
+```
+
+如有必要，您可以提供对特定MBean的引用`server`，并且该 `defaultDomain`属性（的属性`AnnotationMBeanExporter`）接受生成的MBean`ObjectName`域的备用值。如上例中的[MetadataNamingStrategy](https://docs.spring.io/spring-framework/docs/current/reference/html/integration.html#jmx-naming-metadata)所述，使用它代替完全合格的程序包名称 ：
+
+```java
+@EnableMBeanExport(server="myMBeanServer", defaultDomain="myDomain")
+@Configuration
+ContextConfiguration {
+
+}
+```
+
+以下示例显示了与上述基于注释的示例等效的XML：
+
+```xml
+<context:mbean-export server="myMBeanServer" default-domain="myDomain"/>
+```
+
+|      | 不要将基于接口的AOP代理与bean类中的JMX注释的自动检测结合使用。基于接口的代理“隐藏”目标类，这也隐藏了JMX管理的资源注释。因此，你应该在这种情况下，用目标一流的代理（通过设置“代理目标类的标志上`<aop:config/>`， `<tx:annotation-driven/>`等等）。否则，启动时可能会静默忽略您的JMX bean。 |
+| ---- | ------------------------------------------------------------ |
+|      |                                                              |
+
+### 5.4。使用JSR-160连接器(Using JSR-160 Connectors)
+
+对于远程访问，Spring JMX模块`FactoryBean`在`org.springframework.jmx.support`包内提供了两种实现， 用于创建服务器端和客户端连接器。
+
+#### 5.4.1。服务器端连接器(Server-side Connectors)
+
+要让Spring JMX创建，启动和公开JSR-160 `JMXConnectorServer`，可以使用以下配置：
+
+```xml
+<bean id="serverConnector" class="org.springframework.jmx.support.ConnectorServerFactoryBean"/>
+```
+
+默认情况下，`ConnectorServerFactoryBean`创建的`JMXConnectorServer`绑定 `service:jmx:jmxmp://localhost:9875`。`serverConnector`因此，该bean`MBeanServer`通过本地主机（端口9875）上的JMXMP协议向客户端公开本地。请注意，JSR 160规范将JMXMP协议标记为可选。当前，主要的开源JMX实现MX4J和JDK随附的实现不支持JMXMP。
+
+要指定另一个URL并将其`JMXConnectorServer`本身注册到中 `MBeanServer`，可以分别使用`serviceUrl`和`ObjectName`属性，如以下示例所示：
+
+```xml
+<bean id="serverConnector"
+        class="org.springframework.jmx.support.ConnectorServerFactoryBean">
+    <property name="objectName" value="connector:name=rmi"/>
+    <property name="serviceUrl"
+            value="service:jmx:rmi://localhost/jndi/rmi://localhost:1099/myconnector"/>
+</bean>
+```
+
+如果`ObjectName`设置了属性，Spring会自动在`MBeanServer`下方注册您的连接器`ObjectName`。以下示例显示了`ConnectorServerFactoryBean`创建a时 可以传递给的完整参数集`JMXConnector`：
+
+```xml
+<bean id="serverConnector"
+        class="org.springframework.jmx.support.ConnectorServerFactoryBean">
+    <property name="objectName" value="connector:name=iiop"/>
+    <property name="serviceUrl"
+        value="service:jmx:iiop://localhost/jndi/iiop://localhost:900/myconnector"/>
+    <property name="threaded" value="true"/>
+    <property name="daemon" value="true"/>
+    <property name="environment">
+        <map>
+            <entry key="someKey" value="someValue"/>
+        </map>
+    </property>
+</bean>
+```
+
+请注意，当您使用基于RMI的连接器时，需要启动查找服务（`tnameserv`或 `rmiregistry`）以完成名称注册。如果您使用Spring通过RMI为您导出远程服务，则Spring已经构造了一个RMI注册表。如果没有，您可以使用以下配置片段轻松启动注册表：
+
+```xml
+<bean id="registry" class="org.springframework.remoting.rmi.RmiRegistryFactoryBean">
+    <property name="port" value="1099"/>
+</bean>
+```
+
+#### 5.4.2。客户端连接器(Client-side Connectors)
+
+要创建`MBeanServerConnection`启用了远程JSR-160的`MBeanServer`，可以使用 `MBeanServerConnectionFactoryBean`，如以下示例所示：
+
+```xml
+<bean id="clientConnector" class="org.springframework.jmx.support.MBeanServerConnectionFactoryBean">
+    <property name="serviceUrl" value="service:jmx:rmi://localhost/jndi/rmi://localhost:1099/jmxrmi"/>
+</bean>
+```
+
+#### 5.4.3。通过Hessian或SOAP的JMX(JMX over Hessian or SOAP)
+
+JSR-160允许扩展客户端与服务器之间进行通信的方式。上一节中显示的示例使用JSR-160规范（IIOP和JRMP）和（可选）JMXMP所需的基于RMI的强制实现。通过使用其他提供程序或JMX实现（例如[MX4J](http://mx4j.sourceforge.net/)），可以通过简单的HTTP或SSL以及其他协议利用SOAP或Hessian等协议，如以下示例所示：
+
+```xml
+<bean id="serverConnector" class="org.springframework.jmx.support.ConnectorServerFactoryBean">
+    <property name="objectName" value="connector:name=burlap"/>
+    <property name="serviceUrl" value="service:jmx:burlap://localhost:9874"/>
+</bean>
+```
+
+在前面的示例中，我们使用了MX4J 3.0.0。有关更多信息，请参见官方MX4J文档。
+
+### 5.5。通过代理访问MBean(Accessing MBeans through Proxies)
+
+Spring JMX使您可以创建代理，以将调用重新路由到在local或remote中注册的MBean `MBeanServer`。这些代理为您提供了一个标准的Java接口，您可以通过它与MBean进行交互。以下代码显示了如何为在本地运行的MBean配置代理`MBeanServer`：
+
+```xml
+<bean id="proxy" class="org.springframework.jmx.access.MBeanProxyFactoryBean">
+    <property name="objectName" value="bean:name=testBean"/>
+    <property name="proxyInterface" value="org.springframework.jmx.IJmxTestBean"/>
+</bean>
+```
+
+在上面的例子中，你可以看到一个代理被创建为MBean下注册 `ObjectName`的`bean:name=testBean`。代理实现的接口集由`proxyInterfaces`属性控制，将这些接口上的方法和属性映射到MBean上的操作和属性的规则与所使用的规则相同`InterfaceBasedMBeanInfoAssembler`。
+
+在`MBeanProxyFactoryBean`可以创建一个代理，所有MBean是通过访问 `MBeanServerConnection`。默认情况下，本地`MBeanServer`已找到并使用，但是您可以覆盖此位置并提供一个`MBeanServerConnection`指向远程的， `MBeanServer`以迎合指向远程MBean的代理：
+
+```xml
+<bean id="clientConnector"
+        class="org.springframework.jmx.support.MBeanServerConnectionFactoryBean">
+    <property name="serviceUrl" value="service:jmx:rmi://remotehost:9875"/>
+</bean>
+
+<bean id="proxy" class="org.springframework.jmx.access.MBeanProxyFactoryBean">
+    <property name="objectName" value="bean:name=testBean"/>
+    <property name="proxyInterface" value="org.springframework.jmx.IJmxTestBean"/>
+    <property name="server" ref="clientConnector"/>
+</bean>
+```
+
+在前面的示例中，我们创建一个`MBeanServerConnection`指向使用的远程计算机`MBeanServerConnectionFactoryBean`。这`MBeanServerConnection`随后被传递到`MBeanProxyFactoryBean`通过`server`性能。创建的代理`MBeanServer`通过this 将所有调用转发给`MBeanServerConnection`。
+
+### 5.6。通知事项(Notifications)
+
+Spring的JMX产品包括对JMX通知的全面支持。
+
+#### 5.6.1。注册侦听器以接收通知(Registering Listeners for Notifications)
+
+Spring的JMX支持使注册任意数量的`NotificationListeners`MBean变得容易 （这包括Spring导出的`MBeanExporter`MBean和通过其他机制注册的MBean）。例如，考虑一种情况，即`Notification`每次目标MBean的属性发生更改时都希望（通过）被告知 。以下示例将通知写入控制台：
+
+```java
+package com.example;
+
+import javax.management.AttributeChangeNotification;
+import javax.management.Notification;
+import javax.management.NotificationFilter;
+import javax.management.NotificationListener;
+
+public class ConsoleLoggingNotificationListener
+        implements NotificationListener, NotificationFilter {
+
+    public void handleNotification(Notification notification, Object handback) {
+        System.out.println(notification);
+        System.out.println(handback);
+    }
+
+    public boolean isNotificationEnabled(Notification notification) {
+        return AttributeChangeNotification.class.isAssignableFrom(notification.getClass());
+    }
+
+}
+```
+
+以下示例将`ConsoleLoggingNotificationListener`（在前面的示例中定义）添加到`notificationListenerMappings`：
+
+```xml
+<beans>
+
+    <bean id="exporter" class="org.springframework.jmx.export.MBeanExporter">
+        <property name="beans">
+            <map>
+                <entry key="bean:name=testBean1" value-ref="testBean"/>
+            </map>
+        </property>
+        <property name="notificationListenerMappings">
+            <map>
+                <entry key="bean:name=testBean1">
+                    <bean class="com.example.ConsoleLoggingNotificationListener"/>
+                </entry>
+            </map>
+        </property>
+    </bean>
+
+    <bean id="testBean" class="org.springframework.jmx.JmxTestBean">
+        <property name="name" value="TEST"/>
+        <property name="age" value="100"/>
+    </bean>
+
+</beans>
+```
+
+使用前面的配置，每次`Notification`从目标MBean（`bean:name=testBean1`）广播JMX时，都会通知`ConsoleLoggingNotificationListener`通过该`notificationListenerMappings`属性注册为侦听器的Bean 。然后，`ConsoleLoggingNotificationListener`bean可以响应它的响应采取它认为适当的任何操作`Notification`。
+
+您还可以使用纯bean名称作为导出的bean与侦听器之间的链接，如以下示例所示：
+
+```xml
+<beans>
+
+    <bean id="exporter" class="org.springframework.jmx.export.MBeanExporter">
+        <property name="beans">
+            <map>
+                <entry key="bean:name=testBean1" value-ref="testBean"/>
+            </map>
+        </property>
+        <property name="notificationListenerMappings">
+            <map>
+                <entry key="testBean">
+                    <bean class="com.example.ConsoleLoggingNotificationListener"/>
+                </entry>
+            </map>
+        </property>
+    </bean>
+
+    <bean id="testBean" class="org.springframework.jmx.JmxTestBean">
+        <property name="name" value="TEST"/>
+        <property name="age" value="100"/>
+    </bean>
+
+</beans>
+```
+
+如果要为`NotificationListener`封装`MBeanExporter`导出的所有bean注册一个实例，则可以使用特殊的通配符（`*`）作为`notificationListenerMappings`属性映射中条目的键，如以下示例所示：
+
+```xml
+<property name="notificationListenerMappings">
+    <map>
+        <entry key="*">
+            <bean class="com.example.ConsoleLoggingNotificationListener"/>
+        </entry>
+    </map>
+</property>
+```
+
+如果需要进行相反操作（即，针对MBean注册许多不同的侦听器），则必须改为使用`notificationListeners`list属性（优先于该`notificationListenerMappings`属性）。这次`NotificationListener`，我们配置`NotificationListenerBean`实例而不是为单个MBean配置 。A`NotificationListenerBean`将`NotificationListener`和和要注册的`ObjectName`（或`ObjectNames`）封装 在中`MBeanServer`。的`NotificationListenerBean`也封装了许多其它性质，例如的`NotificationFilter`，并且可以在高级JMX通知场景中使用的任意的传对象。
+
+使用`NotificationListenerBean`实例时的配置与先前介绍的配置没有很大不同，如以下示例所示：
+
+```xml
+<beans>
+
+    <bean id="exporter" class="org.springframework.jmx.export.MBeanExporter">
+        <property name="beans">
+            <map>
+                <entry key="bean:name=testBean1" value-ref="testBean"/>
+            </map>
+        </property>
+        <property name="notificationListeners">
+            <list>
+                <bean class="org.springframework.jmx.export.NotificationListenerBean">
+                    <constructor-arg>
+                        <bean class="com.example.ConsoleLoggingNotificationListener"/>
+                    </constructor-arg>
+                    <property name="mappedObjectNames">
+                        <list>
+                            <value>bean:name=testBean1</value>
+                        </list>
+                    </property>
+                </bean>
+            </list>
+        </property>
+    </bean>
+
+    <bean id="testBean" class="org.springframework.jmx.JmxTestBean">
+        <property name="name" value="TEST"/>
+        <property name="age" value="100"/>
+    </bean>
+
+</beans>
+```
+
+前面的示例等效于第一个通知示例。那么，假设我们希望在每次`Notification`提高a时都得到一个递归对象，并且我们还希望`Notifications`通过提供a来过滤掉多余的对象 `NotificationFilter`。以下示例实现了这些目标：
+
+```xml
+<beans>
+
+    <bean id="exporter" class="org.springframework.jmx.export.MBeanExporter">
+        <property name="beans">
+            <map>
+                <entry key="bean:name=testBean1" value-ref="testBean1"/>
+                <entry key="bean:name=testBean2" value-ref="testBean2"/>
+            </map>
+        </property>
+        <property name="notificationListeners">
+            <list>
+                <bean class="org.springframework.jmx.export.NotificationListenerBean">
+                    <constructor-arg ref="customerNotificationListener"/>
+                    <property name="mappedObjectNames">
+                        <list>
+                            <!-- handles notifications from two distinct MBeans -->
+                            <value>bean:name=testBean1</value>
+                            <value>bean:name=testBean2</value>
+                        </list>
+                    </property>
+                    <property name="handback">
+                        <bean class="java.lang.String">
+                            <constructor-arg value="This could be anything..."/>
+                        </bean>
+                    </property>
+                    <property name="notificationFilter" ref="customerNotificationListener"/>
+                </bean>
+            </list>
+        </property>
+    </bean>
+
+    <!-- implements both the NotificationListener and NotificationFilter interfaces -->
+    <bean id="customerNotificationListener" class="com.example.ConsoleLoggingNotificationListener"/>
+
+    <bean id="testBean1" class="org.springframework.jmx.JmxTestBean">
+        <property name="name" value="TEST"/>
+        <property name="age" value="100"/>
+    </bean>
+
+    <bean id="testBean2" class="org.springframework.jmx.JmxTestBean">
+        <property name="name" value="ANOTHER TEST"/>
+        <property name="age" value="200"/>
+    </bean>
+
+</beans>
+```
+
+（有关移交对象是什么以及实际上是什么的完整讨论`NotificationFilter`，请参阅JMX规范（1.2）中名为“ JMX通知模型”的部分。）
+
+#### 5.6.2。发布通知(Publishing Notifications)
+
+Spring不仅提供注册支持`Notifications`，还提供发布支持`Notifications`。
+
+|      | 这部分实际上仅与通过公开为MBean的Spring托管Bean有关`MBeanExporter`。任何现有的用户定义的MBean都应使用标准的JMX API进行通知发布。 |
+| ---- | ------------------------------------------------------------ |
+|      |                                                              |
+
+Spring的JMX通知发布支持中的关键接口是该 `NotificationPublisher`接口（在`org.springframework.jmx.export.notification`包中定义 ）。任何要通过`MBeanExporter`实例导出为MBean的bean都可以实现相关 `NotificationPublisherAware`接口来获得对`NotificationPublisher` 实例的访问。所述`NotificationPublisherAware`接口提供的一个实例 `NotificationPublisher`通过简单的setter方法，其bean可以然后使用发布到各执行豆`Notifications`。
+
+如该[`NotificationPublisher`](https://docs.spring.io/spring-framework/docs/5.3.2/javadoc-api/org/springframework/jmx/export/notification/NotificationPublisher.html) 接口的Javadoc中所述 ，通过该`NotificationPublisher` 机制发布事件的托管Bean不负责通知侦听器的状态管理。Spring的JMX支持负责处理所有JMX基础结构问题。作为应用程序开发人员，您所需要做的就是实现 `NotificationPublisherAware`接口并使用提供的`NotificationPublisher`实例开始发布事件。请注意，在`NotificationPublisher` 托管Bean已向中注册后设置`MBeanServer`。
+
+使用`NotificationPublisher`实例非常简单。您创建一个JMX `Notification`实例（或适当`Notification`子类的实例），用与要发布的事件相关的数据填充通知，然后`sendNotification(Notification)`在`NotificationPublisher`实例上 调用，并传入`Notification`。
+
+在以下示例中，每次调用该操作时，`JmxTestBean`发布的导出实例都将发布 ：`NotificationEvent``add(int, int)`
+
+```java
+package org.springframework.jmx;
+
+import org.springframework.jmx.export.notification.NotificationPublisherAware;
+import org.springframework.jmx.export.notification.NotificationPublisher;
+import javax.management.Notification;
+
+public class JmxTestBean implements IJmxTestBean, NotificationPublisherAware {
+
+    private String name;
+    private int age;
+    private boolean isSuperman;
+    private NotificationPublisher publisher;
+
+    // other getters and setters omitted for clarity
+
+    public int add(int x, int y) {
+        int answer = x + y;
+        this.publisher.sendNotification(new Notification("add", this, 0));
+        return answer;
+    }
+
+    public void dontExposeMe() {
+        throw new RuntimeException();
+    }
+
+    public void setNotificationPublisher(NotificationPublisher notificationPublisher) {
+        this.publisher = notificationPublisher;
+    }
+
+}
+```
+
+该`NotificationPublisher`接口和机械把一切的工作是Spring的JMX支持的一个非常好的特性。但是，它确实带有将您的类与Spring和JMX耦合的代价。和往常一样，这里的建议要务实。如果您需要所提供的功能，`NotificationPublisher`并且可以接受Spring和JMX的耦合，则可以这样做。
+
+### 5.7。更多资源( Further Resources)
+
+本节包含有关JMX的更多资源的链接：
+
+- Oracle的[JMX主页](https://www.oracle.com/technetwork/java/javase/tech/javamanagement-140525.html)。
+- 的[JMX规范](https://jcp.org/aboutJava/communityprocess/final/jsr003/index3.html)（JSR-000003）。
+- 该[JMX远程API规范](https://jcp.org/aboutJava/communityprocess/final/jsr160/index.html)（JSR-000160）。
+- 该[MX4J主页](http://mx4j.sourceforge.net/)。（MX4J是各种JMX规范的开源实现。）
+
+## 6.电子邮件(Email)
+
+本节介绍如何使用Spring Framework发送电子邮件。
+
+库依赖
+
+为了使用Spring Framework的电子邮件库，以下JAR必须位于应用程序的类路径中：
+
+- 该[JavaMail的/雅加达邮1.6](https://eclipse-ee4j.github.io/mail/)库
+
+该库可在Web上免费使用-例如，在Maven Central中为 `com.sun.mail:jakarta.mail`。请确保使用最新的1.6.x版本，而不要使用Jakarta Mail 2.0（后者带有其他程序包名称空间）。
+
+Spring框架提供了一个有用的实用程序库，用于发送电子邮件，使您不受底层邮件系统的限制，并负责代表客户端进行低级资源处理。
+
+该`org.springframework.mail`软件包是Spring框架的电子邮件支持的根级软件包。用于发送电子邮件的中央接口是该`MailSender` 接口。封装了简单邮件（例如`from`和`to`，以及其他许多邮件）的属性的简单值对象是`SimpleMailMessage`类。此程序包还包含一个已检查异常的层次结构，该层次结构提供了比较低级别的邮件系统异常更高的抽象级别，根异常为 `MailException`。有关 富邮件异常层次结构的更多信息，请参见[javadoc](https://docs.spring.io/spring-framework/docs/5.3.2/javadoc-api/org/springframework/mail/MailException.html)。
+
+该`org.springframework.mail.javamail.JavaMailSender`接口向该`MailSender`接口（继承自该接口）添加了特殊的JavaMail功能，例如MIME消息支持。`JavaMailSender`还提供了`org.springframework.mail.javamail.MimeMessagePreparator`用于准备的回调接口 `MimeMessage`。
+
+### 6.1。用法( Usage)
+
+假设我们有一个名为的业务接口`OrderManager`，如以下示例所示：
+
+```java
+public interface OrderManager {
+
+    void placeOrder(Order order);
+
+}
+```
+
+进一步假设我们有一项要求，说明需要生成带有订单号的电子邮件并将其发送给下订单的客户。
+
+#### 6.1.1。基本`MailSender`和`SimpleMailMessage`用法(Basic `MailSender` and `SimpleMailMessage` Usage)
+
+以下示例显示了有人下订单时如何使用`MailSender`和`SimpleMailMessage`发送电子邮件：
+
+```java
+import org.springframework.mail.MailException;
+import org.springframework.mail.MailSender;
+import org.springframework.mail.SimpleMailMessage;
+
+public class SimpleOrderManager implements OrderManager {
+
+    private MailSender mailSender;
+    private SimpleMailMessage templateMessage;
+
+    public void setMailSender(MailSender mailSender) {
+        this.mailSender = mailSender;
+    }
+
+    public void setTemplateMessage(SimpleMailMessage templateMessage) {
+        this.templateMessage = templateMessage;
+    }
+
+    public void placeOrder(Order order) {
+
+        // Do the business calculations...
+
+        // Call the collaborators to persist the order...
+
+        // Create a thread safe "copy" of the template message and customize it
+        SimpleMailMessage msg = new SimpleMailMessage(this.templateMessage);
+        msg.setTo(order.getCustomer().getEmailAddress());
+        msg.setText(
+            "Dear " + order.getCustomer().getFirstName()
+                + order.getCustomer().getLastName()
+                + ", thank you for placing order. Your order number is "
+                + order.getOrderNumber());
+        try{
+            this.mailSender.send(msg);
+        }
+        catch (MailException ex) {
+            // simply log it and go on...
+            System.err.println(ex.getMessage());
+        }
+    }
+
+}
+```
+
+以下示例显示了上述代码的bean定义：
+
+```xml
+<bean id="mailSender" class="org.springframework.mail.javamail.JavaMailSenderImpl">
+    <property name="host" value="mail.mycompany.example"/>
+</bean>
+
+<!-- this is a template message that we can pre-load with default state -->
+<bean id="templateMessage" class="org.springframework.mail.SimpleMailMessage">
+    <property name="from" value="customerservice@mycompany.example"/>
+    <property name="subject" value="Your order"/>
+</bean>
+
+<bean id="orderManager" class="com.mycompany.businessapp.support.SimpleOrderManager">
+    <property name="mailSender" ref="mailSender"/>
+    <property name="templateMessage" ref="templateMessage"/>
+</bean>
+```
+
+#### 6.1.2。使用`JavaMailSender`和`MimeMessagePreparator`(Using `JavaMailSender` and `MimeMessagePreparator`)
+
+本节描述`OrderManager`了使用`MimeMessagePreparator` 回调接口的另一种实现。在下面的示例中，该`mailSender`属性是类型的， `JavaMailSender`以便我们能够使用JavaMail`MimeMessage`类：
+
+```java
+import javax.mail.Message;
+import javax.mail.MessagingException;
+import javax.mail.internet.InternetAddress;
+import javax.mail.internet.MimeMessage;
+
+import javax.mail.internet.MimeMessage;
+import org.springframework.mail.MailException;
+import org.springframework.mail.javamail.JavaMailSender;
+import org.springframework.mail.javamail.MimeMessagePreparator;
+
+public class SimpleOrderManager implements OrderManager {
+
+    private JavaMailSender mailSender;
+
+    public void setMailSender(JavaMailSender mailSender) {
+        this.mailSender = mailSender;
+    }
+
+    public void placeOrder(final Order order) {
+        // Do the business calculations...
+        // Call the collaborators to persist the order...
+
+        MimeMessagePreparator preparator = new MimeMessagePreparator() {
+            public void prepare(MimeMessage mimeMessage) throws Exception {
+                mimeMessage.setRecipient(Message.RecipientType.TO,
+                        new InternetAddress(order.getCustomer().getEmailAddress()));
+                mimeMessage.setFrom(new InternetAddress("mail@mycompany.example"));
+                mimeMessage.setText("Dear " + order.getCustomer().getFirstName() + " " +
+                        order.getCustomer().getLastName() + ", thanks for your order. " +
+                        "Your order number is " + order.getOrderNumber() + ".");
+            }
+        };
+
+        try {
+            this.mailSender.send(preparator);
+        }
+        catch (MailException ex) {
+            // simply log it and go on...
+            System.err.println(ex.getMessage());
+        }
+    }
+
+}
+```
+
+|      | 邮件代码是一个横切关注点，很可能是重构为[自定义Spring AOP方面](https://docs.spring.io/spring-framework/docs/current/reference/html/core.html#aop)的候选对象，然后可以在`OrderManager`目标上的适当连接点处运行该代码。 |
+| ---- | ------------------------------------------------------------ |
+|      |                                                              |
+
+Spring Framework的邮件支持随附于标准JavaMail实现。有关更多信息，请参见相关的Javadoc。
+
+### 6.2。使用JavaMail`MimeMessageHelper`(Using the JavaMail `MimeMessageHelper`)
+
+处理JavaMail消息时非常方便的类是 `org.springframework.mail.javamail.MimeMessageHelper`，它使您不必使用冗长的JavaMail API。使用`MimeMessageHelper`，很容易创建一个`MimeMessage`，如以下示例所示：
+
+```java
+// of course you would use DI in any real-world cases
+JavaMailSenderImpl sender = new JavaMailSenderImpl();
+sender.setHost("mail.host.com");
+
+MimeMessage message = sender.createMimeMessage();
+MimeMessageHelper helper = new MimeMessageHelper(message);
+helper.setTo("test@host.com");
+helper.setText("Thank you for ordering!");
+
+sender.send(message);
+```
+
+#### 6.2.1。发送附件和内联资源(Sending Attachments and Inline Resources)
+
+多部分电子邮件允许同时使用附件和内联资源。内联资源的示例包括您要在邮件中使用但不希望显示为附件的图像或样式表。
+
+##### 附件(Attachments)
+
+以下示例显示了如何使用`MimeMessageHelper`来发送带有单个JPEG图像附件的电子邮件：
+
+```java
+JavaMailSenderImpl sender = new JavaMailSenderImpl();
+sender.setHost("mail.host.com");
+
+MimeMessage message = sender.createMimeMessage();
+
+// use the true flag to indicate you need a multipart message
+MimeMessageHelper helper = new MimeMessageHelper(message, true);
+helper.setTo("test@host.com");
+
+helper.setText("Check out this image!");
+
+// let's attach the infamous windows Sample file (this time copied to c:/)
+FileSystemResource file = new FileSystemResource(new File("c:/Sample.jpg"));
+helper.addAttachment("CoolImage.jpg", file);
+
+sender.send(message);
+```
+
+##### 内联资源(Inline Resources)
+
+以下示例显示了如何使用`MimeMessageHelper`来发送带有嵌入式图像的电子邮件：
+
+```java
+JavaMailSenderImpl sender = new JavaMailSenderImpl();
+sender.setHost("mail.host.com");
+
+MimeMessage message = sender.createMimeMessage();
+
+// use the true flag to indicate you need a multipart message
+MimeMessageHelper helper = new MimeMessageHelper(message, true);
+helper.setTo("test@host.com");
+
+// use the true flag to indicate the text included is HTML
+helper.setText("<html><body><img src='cid:identifier1234'></body></html>", true);
+
+// let's include the infamous windows Sample file (this time copied to c:/)
+FileSystemResource res = new FileSystemResource(new File("c:/Sample.jpg"));
+helper.addInline("identifier1234", res);
+
+sender.send(message);
+```
+
+|      | 内联资源`MimeMessage`通过使用指定的`Content-ID` （`identifier1234`在上例中）添加到中。添加文本和资源的顺序非常重要。确保首先添加文本，然后添加资源。如果您正相反进行操作，则此操作无效。 |
+| ---- | ------------------------------------------------------------ |
+|      |                                                              |
+
+#### 6.2.2。使用模板库创建电子邮件内容(Creating Email Content by Using a Templating Library)
+
+上一节中显示的示例中的代码通过使用诸如之类的方法调用显式创建了电子邮件的内容`message.setText(..)`。这对于简单的情况很好，并且在上述示例的上下文中也可以，其目的是向您展示API的基本知识。
+
+但是，在典型的企业应用程序中，由于多种原因，开发人员通常不使用以前显示的方法来创建电子邮件的内容：
+
+- 用Java代码创建基于HTML的电子邮件内容既繁琐又容易出错。
+- 显示逻辑和业务逻辑之间没有明确区分。
+- 更改电子邮件内容的显示结构需要编写Java代码，重新编译，重新部署等。
+
+通常，解决这些问题的方法是使用模板库（例如FreeMarker）来定义电子邮件内容的显示结构。这使您的代码只能执行创建要在电子邮件模板中呈现的数据并发送电子邮件的任务。当您的电子邮件内容变得什至有点复杂时，绝对是最佳实践，而且，借助Spring Framework对FreeMarker的支持类，它变得非常容易实现。
